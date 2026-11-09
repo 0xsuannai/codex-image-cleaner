@@ -5,7 +5,7 @@ import logging
 import secrets
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from app_support import APP_VERSION, app_paths, preference_path
@@ -20,6 +20,7 @@ from cleaner import (
     scan,
     validate_manifest,
 )
+from codex_process import CodexLifecycle, lock_status
 from journal import backup_summary
 from safe_json import read_file
 
@@ -69,6 +70,7 @@ class Desktop:
         self.progress = [0, 0]
         self.report = None
         self.worker = None
+        self.size_history = {}
 
     def snapshot(self, revision=None):
         with self.lock:
@@ -84,18 +86,33 @@ class Desktop:
             }
             if revision != str(self.revision):
                 result["sessions"] = [
-                    dict(asdict(info), key=key, eligible=eligible(info))
+                    dict(
+                        asdict(info),
+                        key=key,
+                        eligible=eligible(info),
+                        last_cleanup=(
+                            self.size_history.get(info.path)
+                            if self.size_history.get(info.path, {}).get("after_size")
+                            == info.content_size
+                            else None
+                        ),
+                    )
                     for key, info in self.items.items()
                 ]
             return result
 
-    def _start(self, operation, job):
+    def _start(self, operation, job, *, interrupt_scan=False):
         with self.lock:
-            if self.busy:
+            previous = None
+            if self.busy == "scan" and interrupt_scan:
+                self.cancel.set()
+                previous = self.worker
+            elif self.busy:
                 raise CleanupError("正在处理会话，请等待当前操作完成")
             self.busy = operation
             self.confirmation = None
-            self.cancel.clear()
+            if not previous:
+                self.cancel = threading.Event()
             self.progress = [0, 0]
             self.status = {
                 "scan": "正在查找本地会话…",
@@ -105,10 +122,14 @@ class Desktop:
 
             def run():
                 try:
+                    if previous:
+                        previous.join()
+                        self.cancel = threading.Event()
                     job()
                 except ScanCancelled:
                     with self.lock:
-                        self.status = "扫描已停止，已完成的结果仍可使用"
+                        if self.worker is threading.current_thread():
+                            self.status = "扫描已停止，已完成的结果仍可使用"
                 except Exception as exc:
                     logger.exception("Desktop job failed: %s", operation)
                     with self.lock:
@@ -121,7 +142,8 @@ class Desktop:
                         }
                 finally:
                     with self.lock:
-                        self.busy = ""
+                        if self.worker is threading.current_thread():
+                            self.busy = ""
                         self.revision += 1
 
             self.worker = threading.Thread(target=run, daemon=False, name="cleaner-" + operation)
@@ -143,6 +165,7 @@ class Desktop:
             self.status = f"正在检查图片 {done} / {total}"
 
     def _scan(self):
+        cancel = self.cancel
         if not any((self.home / folder).is_dir() for folder in ("sessions", "archived_sessions")):
             self._catalog([])
             with self.lock:
@@ -154,14 +177,13 @@ class Desktop:
                 self._progress,
                 on_catalog=self._catalog,
                 on_session=self._session,
-                cancel=self.cancel,
+                cancel=cancel,
                 cache=self.cache,
             )
             self._catalog(items)
             with self.lock:
-                self.status = (
-                    f"已找到 {len(items)} 个会话 · {sum(eligible(i) for i in items)} 个可清理图片"
-                )
+                if self.busy in ("", "scan"):
+                    self.status = f"已找到 {len(items)} 个会话 · {sum(eligible(i) for i in items)} 个可清理图片"
         finally:
             try:
                 self.paths.runtime.mkdir(parents=True, exist_ok=True)
@@ -241,7 +263,7 @@ class Desktop:
 
     def prepare(self, body):
         with self.lock:
-            if self.busy:
+            if self.busy and self.busy != "scan":
                 raise CleanupError("请等待当前操作完成")
             kind = body.get("kind", "clean")
             if kind == "clean":
@@ -253,10 +275,17 @@ class Desktop:
                 ):
                     raise CleanupError("请选择需要清理的会话（每批最多 1000 个）")
                 chosen = [self.items.get(key) for key in dict.fromkeys(keys)]
-                if any(info is None or not eligible(info) for info in chosen):
+                if any(
+                    info is None
+                    or info.error
+                    or info.recovery_backup
+                    or (info.scanned and not eligible(info))
+                    for info in chosen
+                ):
                     raise CleanupError("部分会话没有可清理图片、尚未检查或需要修复，请重新选择")
-                target = chosen
+                target = [replace(info) for info in chosen]
                 titles = [i.title for i in chosen]
+                thread_ids = [i.thread_id for i in chosen]
             elif kind in ("restore", "repair"):
                 key = body.get("key")
                 if not isinstance(key, str):
@@ -275,6 +304,7 @@ class Desktop:
                 manifest = validate_manifest(read_file(path))
                 target = path.parent
                 titles = [manifest.get("title") or "未命名会话"]
+                thread_ids = [manifest["thread_id"]]
             else:
                 raise CleanupError("不支持的操作")
             nonce = secrets.token_urlsafe(32)
@@ -285,13 +315,18 @@ class Desktop:
                 "titles": titles,
                 "expires": time.monotonic() + 180,
             }
-            return {"confirmation": nonce, "kind": kind, "titles": titles}
+            return {
+                "confirmation": nonce,
+                "kind": kind,
+                "titles": titles,
+                "lock": lock_status(self.home, thread_ids),
+            }
 
     def execute(self, body):
         with self.lock:
             challenge = self.confirmation
             if (
-                self.busy
+                (self.busy and self.busy != "scan")
                 or not challenge
                 or body.get("acknowledged") is not True
                 or not isinstance(body.get("confirmation"), str)
@@ -302,63 +337,158 @@ class Desktop:
                 raise CleanupError("请重新确认目标会话已关闭")
             self.confirmation = None
             online = body["mode"] == "online"
+            close_codex = body.get("close_codex") is True
+            if "close_codex" in body and type(body["close_codex"]) is not bool:
+                raise CleanupError("关闭 Codex 选项格式错误")
 
             def job():
                 completed, skipped, failed = [], [], []
-                if challenge["kind"] == "clean":
-                    for index, info in enumerate(challenge["target"]):
-                        self._progress(index, len(challenge["target"]))
+                lifecycle = CodexLifecycle() if close_codex else None
+                restart_error = ""
+                try:
+                    if lifecycle:
                         with self.lock:
-                            self.status = f"正在备份并清理 {index + 1} / {len(challenge['target'])}"
+                            self.status = "正在关闭 Codex，等待释放会话锁…"
+                        lifecycle.close()
+                    process_targets(completed, skipped, failed, online and not close_codex)
+                except Exception as exc:
+                    logger.exception("Session operation failed")
+                    failed.append({"title": "会话处理", "error": str(exc)})
+                finally:
+                    if lifecycle:
+                        with self.lock:
+                            self.status = "正在重新启动 Codex…"
                         try:
-                            backup = clean_session(self.home, info, self.backups, online=online)
-                            completed.append(
-                                {
-                                    "title": info.title,
-                                    "backup": str(backup) if backup else "无需清理",
-                                }
-                            )
-                            self.cache.pop(info.path, None)
-                        except SessionBusy as exc:
-                            skipped.append({"title": info.title, "error": str(exc)})
+                            lifecycle.restart()
                         except Exception as exc:
-                            logger.exception("Cleanup failed")
-                            failed.append({"title": info.title, "error": str(exc)})
-                    message = (
-                        f"已清理 {len(completed)} 个会话的历史图片"
-                        if completed
-                        else "本次没有清理成功的会话"
-                    )
-                else:
-                    restore(self.home, challenge["target"], online=online)
-                    completed.append(
-                        {"title": challenge["titles"][0], "backup": str(challenge["target"])}
-                    )
-                    self.cache.clear()
-                    message = "已恢复会话图片"
+                            logger.exception("Codex restart failed")
+                            restart_error = str(exc)
+                            failed.append({"title": "重新启动 Codex", "error": restart_error})
+                message = (
+                    f"已清理 {len(completed)} 个会话的历史图片"
+                    if challenge["kind"] == "clean" and completed
+                    else "已恢复会话图片"
+                    if completed
+                    else "本次没有清理成功的会话"
+                )
                 if skipped:
                     message += f" · {len(skipped)} 个仍被占用，已跳过"
                 if failed:
                     message += f" · {len(failed)} 个未完成"
                 next_step = (
-                    "重新打开已处理的会话，再尝试发送消息。"
+                    "Codex 已重新启动，可以继续使用会话。"
+                    if lifecycle and completed and not restart_error
+                    else "重新打开已处理的会话，再尝试发送消息。"
                     if completed
                     else "请查看详情；占用的会话关闭后可重试。"
                 )
+                if restart_error:
+                    next_step = "处理已结束，Codex 重启失败，请手动打开。"
                 with self.lock:
                     self.report = {
                         "message": message,
                         "next_step": next_step,
+                        "kind": challenge["kind"],
                         "completed": completed,
                         "skipped": skipped,
                         "failed": failed,
+                        "retry_keys": [item["key"] for item in skipped if "key" in item],
+                        "totals": {
+                            key: sum(item.get(key, 0) for item in completed)
+                            for key in (
+                                "before_size",
+                                "after_size",
+                                "disk_before",
+                                "disk_after",
+                                "cache_reduced",
+                            )
+                        },
                     }
                     self.status = next_step
-                self._scan()
-                with self.lock:
-                    self.status = next_step
 
-            self._start("clean" if challenge["kind"] == "clean" else "restore", job)
+            def process_targets(completed, skipped, failed, use_online):
+                if challenge["kind"] == "clean":
+                    # Stop the global scan first, then validate only this selection,
+                    # including cache-only images. No scan and mutation overlap.
+                    targets = challenge["target"]
+                    fresh = {
+                        info.path: info
+                        for info in scan(
+                            self.home,
+                            paths={info.path for info in targets},
+                            cache=self.cache,
+                        )
+                    }
+                    for index, expected in enumerate(targets):
+                        info = fresh.get(expected.path)
+                        self._progress(index, len(challenge["target"]))
+                        with self.lock:
+                            self.status = f"正在备份并清理 {index + 1} / {len(challenge['target'])}"
+                        try:
+                            if info is None:
+                                raise CleanupError("会话已移动或不存在，请重新扫描")
+                            if (
+                                expected.sha256
+                                and expected.sha256 != info.sha256
+                                and not close_codex
+                            ):
+                                raise CleanupError("会话已发生变化，请刷新列表后重试")
+                            backup = clean_session(self.home, info, self.backups, online=use_online)
+                            if not backup:
+                                skipped.append({"title": info.title, "error": "没有可清理的图片"})
+                                self._session(info)
+                                continue
+                            manifest = read_file(backup / "manifest.json")
+                            sizes = {
+                                "before_size": manifest["original_content_size"],
+                                "after_size": manifest["clean_content_size"],
+                                "disk_before": manifest["original_size"],
+                                "disk_after": manifest["clean_size"],
+                                "cache_reduced": sum(
+                                    len(edit["before"].get("item_json", "").encode("utf-8"))
+                                    - len(edit["after"].get("item_json", "").encode("utf-8"))
+                                    for edit in manifest["cache_edits"]
+                                ),
+                            }
+                            completed.append(
+                                {
+                                    "title": info.title,
+                                    "backup": str(backup) if backup else "无需清理",
+                                    **sizes,
+                                }
+                            )
+                            with self.lock:
+                                self.size_history[info.path] = sizes
+                            self.cache.pop(info.path, None)
+                        except SessionBusy as exc:
+                            skipped.append(
+                                {
+                                    "title": expected.title,
+                                    "error": str(exc),
+                                    "key": object_id(expected.path),
+                                }
+                            )
+                        except Exception as exc:
+                            logger.exception("Cleanup failed")
+                            failed.append({"title": expected.title, "error": str(exc)})
+                    for info in scan(
+                        self.home, paths={info.path for info in targets}, cache=self.cache
+                    ):
+                        self._session(info)
+                else:
+                    restore(self.home, challenge["target"], online=use_online)
+                    completed.append(
+                        {"title": challenge["titles"][0], "backup": str(challenge["target"])}
+                    )
+                    self.cache.clear()
+                    manifest = read_file(challenge["target"] / "manifest.json")
+                    self.size_history.pop(manifest["path"], None)
+                    for info in scan(self.home, paths={manifest["path"]}, cache=self.cache):
+                        self._session(info)
+
+            self._start(
+                "clean" if challenge["kind"] == "clean" else "restore", job, interrupt_scan=True
+            )
 
     def close(self):
         self.stop()

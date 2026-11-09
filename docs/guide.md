@@ -6,6 +6,22 @@
 
 搜索支持名称、消息、工作区和会话 ID。Ctrl+K / Ctrl+F（Mac 使用 ⌘）聚焦搜索；Escape 清除选择。点击行末箭头查看详情。会话每批显示 60 条，单次最多处理 1000 个；筛选或分页隐藏的选择会在操作区提示。
 
+主任务集中显示，子任务按父会话 ID 归入主任务下，默认折叠，点击“子任务”展开后可独立勾选。选择主任务不会自动选中子任务；“选择有图片的会话”只选择当前已显示的匹配会话。折叠不会取消已有选择，操作区会提示隐藏的选择。搜索子任务时会保留并展开主任务；“只看有图片”也会保留对应主任务作为层级上下文。找不到主任务的子任务单独折叠收纳。
+
+扫描时即可选择会话并清理，包括尚未检查的会话。工具先暂停全局扫描，再只检查和处理所选会话；无需等待全部会话扫描完毕。其余未检查会话可继续选择清理，或点击“重新扫描”。
+
+### 大小与处理结果
+
+列表展示原始内容大小与预计清理后大小，清理后更新为实际值。这里统计 JSONL 日志的有效字节，不包含记录末尾的兼容空白填充；初次检查前只能显示磁盘文件大小，清理后大小显示“待检查”。详情与结果窗单独展示磁盘文件大小。历史缓存的图片内容减少量另行列出，不混入日志大小对比。
+
+清理结束后自动弹出结果窗，展示成功、占用跳过和失败项，以及实际清理前后的大小。工具仍保留日志原长度以兼容 Codex 的历史位置，因此内容减少不等于释放磁盘空间，备份还会额外占用空间。
+
+### 会话锁与自动重启
+
+确认时探测实际系统锁，残留锁文件本身不会被误判为占用。检测到锁或不兼容的锁机制时提示关闭 Codex；识别到桌面应用后可选择“一键关闭 Codex，完成后自动重启”。请先保存工作并停止任务，工具会等待正常退出，再以离线方式清理，并在处理结束后尝试重启原应用。退出失败时不执行清理；清理失败也会尝试重启，重启失败则在结果中提示手动打开。
+
+Windows 支持原生 OpenAI.Codex 应用包和可识别的 Electron Codex 桌面窗口，原生应用通过系统应用包入口重启；Mac 关闭 Codex 桌面应用。CLI、IDE 插件和无法识别的桌面安装需手动退出。操作时仍会再次获取写锁；若确认后又被占用，会跳过并在结果窗提供重试入口。
+
 ### 清理范围
 
 扫描 `sessions`、`archived_sessions` 下的 `rollout-*.jsonl`，处理明确标记的图片块、用户图片列表、明文替代历史，以及已知 `thread_history_1.sqlite` 图片缓存。
@@ -33,7 +49,7 @@
 | 问题 | 处理方法 |
 | --- | --- |
 | 找不到会话 | 在“目录设置”中核对 `.codex` 或 `CODEX_HOME` |
-| 会话被占用 | 停止任务并关闭目标会话，稍等后重新扫描；必要时完全退出 Codex 使用离线模式 |
+| 会话被占用 | 保存工作并停止任务，使用“一键关闭 Codex，完成后自动重启”；CLI / IDE 插件需手动退出 |
 | 本地界面断连 | 等待自动重连或手动重试；后台已退出时重新启动工具 |
 | Mac 无法首次打开 | 应用为 ad-hoc 签名、未公证。按 Apple 官方流程允许可信应用，不要关闭全局安全保护 |
 | 清理后磁盘没变小 | 正常。日志保留原长度和历史位置，备份也保留原数据 |
@@ -53,6 +69,8 @@ Windows 10/11 x64；Mac 原生 arm64 / x86_64，以 macOS 15 为 CI 基线；Lin
 ### Finding conversations
 
 Search matches titles, messages, workspaces, and conversation IDs. Ctrl+K / Ctrl+F (⌘ on Mac) focuses search; Escape clears selection. Row arrows open details. Lists load 60 rows at a time, with up to 1,000 targets per operation. Hidden selections are disclosed in the action area.
+
+Subtasks are grouped under their parent conversation and collapsed by default. Expand a group to select subtasks individually; selecting a parent does not select its children. Bulk image selection applies to currently displayed matching conversations. Collapsing a group keeps existing selections and reports them in the action area. Search reveals matching subtasks together with their parent context, and the image filter retains the relevant parent. Subtasks whose parent is unavailable are collected in a separate collapsed group.
 
 ### Cleanup and recovery
 

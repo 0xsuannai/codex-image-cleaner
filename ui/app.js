@@ -19,6 +19,10 @@ let toastTimer;
 let exiting = false;
 let pollTimer;
 let polling = false;
+const expandedGroups = new Set();
+const collapsedGroups = new Set();
+let visibleSessionKeys = new Set();
+let visibleRowCount = 0;
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
 if (navigator.platform.includes("Mac")) document.querySelector(".search kbd").textContent = "⌘ K";
 
@@ -87,8 +91,84 @@ function filtered() {
     })
     .sort((a, b) => b.modified - a.modified);
 }
+function groupedRows() {
+  const matches = filtered();
+  const included = new Set(matches.map((info) => info.key));
+  const byId = new Map(state.sessions.map((info) => [info.thread_id, info]));
+  const byKey = new Map(state.sessions.map((info) => [info.key, info]));
+  const parents = new Map();
+  for (const info of state.sessions) {
+    const parent = byId.get(info.parent_thread_id);
+    if (info.is_subagent && parent && parent.key !== info.key) parents.set(info.key, parent.key);
+  }
+  // Malformed ancestry must never hide a session or recurse indefinitely.
+  for (const info of state.sessions) {
+    const seen = new Set([info.key]);
+    let cursor = info.key;
+    while (parents.has(cursor)) {
+      cursor = parents.get(cursor);
+      if (seen.has(cursor)) { parents.delete(info.key); break; }
+      seen.add(cursor);
+    }
+  }
+  const reveal = new Set();
+  const hasFilter = !!$("search").value.trim() || $("images-only").checked;
+  for (const info of matches) {
+    let cursor = info.key;
+    while (parents.has(cursor)) {
+      cursor = parents.get(cursor);
+      included.add(cursor);
+      if (hasFilter) reveal.add(cursor);
+    }
+  }
+  const children = new Map();
+  const roots = [], orphans = [];
+  for (const key of included) {
+    const info = byKey.get(key);
+    const parent = parents.get(key);
+    if (parent) {
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(info);
+    } else if (info.is_subagent) orphans.push(info);
+    else roots.push(info);
+  }
+  const latest = (a, b) => b.modified - a.modified;
+  roots.sort(latest);
+  orphans.sort(latest);
+  for (const entries of children.values()) entries.sort(latest);
+  const rows = [];
+  function append(info, parentKey, depth) {
+    const descendants = children.get(info.key) || [];
+    const open = !collapsedGroups.has(info.key) && (expandedGroups.has(info.key) || reveal.has(info.key));
+    rows.push({ info, parentKey, depth, childCount: descendants.length, open });
+    if (open) for (const child of descendants) append(child, info.key, depth + 1);
+  }
+  for (const info of roots) append(info, "", 0);
+  if (orphans.length) {
+    const key = "orphan-subtasks";
+    const open = !collapsedGroups.has(key) && (expandedGroups.has(key) || hasFilter);
+    rows.push({ orphan: true, key, childCount: orphans.length, open });
+    if (open) for (const info of orphans) append(info, key, 1);
+  }
+  return { rows, mainCount: roots.length, subCount: [...included].filter((key) => byKey.get(key).is_subagent).length };
+}
+function toggleGroup(key, open) {
+  if (open) { expandedGroups.delete(key); collapsedGroups.add(key); }
+  else { expandedGroups.add(key); collapsedGroups.delete(key); }
+  renderList();
+}
 function chosen() {
   return state.sessions.filter((info) => selected.has(info.key));
+}
+function actionable(info) {
+  return !info.error && !info.recovery_backup && (info.eligible || !info.scanned);
+}
+function sizes(info) {
+  return {
+    before: info.last_cleanup?.before_size ?? (info.scanned ? info.content_size : info.size),
+    after: info.last_cleanup?.after_size ??
+      (info.scanned ? Math.max(0, info.content_size - info.saving) : null),
+  };
 }
 function timestamp(value) {
   return value
@@ -102,6 +182,7 @@ function timestamp(value) {
     : "暂无时间记录";
 }
 function bytes(value) {
+  if (!Number.isFinite(value)) return "—";
   for (const unit of ["B", "KB", "MB", "GB"]) {
     if (value < 1024 || unit === "GB") return value.toFixed(1) + " " + unit;
     value /= 1024;
@@ -112,7 +193,7 @@ function select(key, checked) {
   else selected.delete(key);
   renderList();
   if (checked) {
-    const row = [...$("session-list").children].find((item) => item.dataset.key === key);
+    const row = [...$("session-list").querySelectorAll(".session-row")].find((item) => item.dataset.key === key);
     if (row)
       feedback(
         row,
@@ -128,39 +209,77 @@ function select(key, checked) {
   }
 }
 function renderList() {
-  const items = filtered();
+  const view = groupedRows();
+  visibleRowCount = view.rows.length;
+  visibleSessionKeys = new Set();
   const list = $("session-list");
   const scroll = list.scrollTop;
   const focused = list.contains(document.activeElement)
     ? { key: document.activeElement.closest(".session-row")?.dataset.key,
-        selector: document.activeElement.matches("input") ? "input" : ".row-detail" }
+        orphan: document.activeElement.id === "orphan-toggle",
+        selector: document.activeElement.matches("input") ? "input" :
+          document.activeElement.matches(".subtask-toggle") ? ".subtask-toggle" : ".row-detail" }
     : null;
   const fragment = document.createDocumentFragment();
-  items.slice(0, pageSize).forEach((info) => {
-    const row = element("div", "session-row" + (selected.has(info.key) ? " selected" : ""));
+  const containers = new Map([["", fragment]]);
+  view.rows.slice(0, pageSize).forEach((entry) => {
+    if (entry.orphan) {
+      const section = element("div", "orphan-group");
+      const toggle = element("button", "orphan-toggle", (entry.open ? "▾ " : "▸ ") + "未找到主任务的子任务（" + entry.childCount + "）");
+      toggle.id = "orphan-toggle";
+      toggle.setAttribute("aria-expanded", String(entry.open));
+      toggle.addEventListener("click", () => toggleGroup(entry.key, entry.open));
+      const children = element("div", "session-children");
+      children.setAttribute("role", "group");
+      children.setAttribute("aria-label", "未找到主任务的子任务");
+      children.hidden = !entry.open;
+      section.append(toggle, children);
+      fragment.append(section);
+      containers.set(entry.key, children);
+      return;
+    }
+    const { info, parentKey, depth, childCount, open } = entry;
+    visibleSessionKeys.add(info.key);
+    const group = element("div", "session-group");
+    const row = element("div", "session-row" + (depth ? " subtask-row" : "") + (selected.has(info.key) ? " selected" : ""));
     row.dataset.key = info.key;
+    row.dataset.parent = parentKey;
     const checkbox = element("input");
     checkbox.type = "checkbox";
     checkbox.checked = selected.has(info.key);
     checkbox.setAttribute("aria-label", "选择会话：" + info.title);
     checkbox.addEventListener("click", (event) => event.stopPropagation());
     checkbox.addEventListener("change", () => select(info.key, checkbox.checked));
-    const thumbnail = element("span", "session-icon" + (info.eligible ? " has-images" : ""));
-    thumbnail.append(icon(info.eligible ? "image" : "file"));
     const copy = element("div", "session-copy");
     const title = element("span", "session-title", info.title || "未命名会话");
     title.title = info.title;
     copy.append(title);
-    const message = info.preview?.replace(/\s+/g, " ").trim();
     const workspace = info.cwd?.split(/[\\/]/).filter(Boolean).pop();
     const preview = info.recovery_backup
       ? "上次清理中断，请先单独选择并修复"
-      : info.error || (message && message !== info.title ? message : "") ||
-        (workspace ? "工作区 · " + workspace : "暂无消息预览");
+      : info.error || [workspace, timestamp(info.modified)].filter(Boolean).join(" · ");
     const subtitle = element("span", "session-preview", preview);
     subtitle.title = preview;
-    copy.append(subtitle);
-    const modified = element("span", "session-time", timestamp(info.modified));
+    const meta = element("div", "session-meta");
+    meta.append(subtitle);
+    if (childCount) {
+      const toggle = element("button", "subtask-toggle", (open ? "▾ " : "▸ ") + "子任务 " + childCount);
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.setAttribute("aria-label", (open ? "收起" : "展开") + info.title + "的子任务");
+      toggle.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleGroup(info.key, open);
+      });
+      toggle.addEventListener("dblclick", (event) => event.stopPropagation());
+      meta.append(toggle);
+    }
+    copy.append(meta);
+    const size = sizes(info);
+    const before = element("span", "session-size", bytes(size.before));
+    before.title = "有效内容大小；磁盘文件 " + bytes(info.size);
+    const after = element("span", "session-size after-size", bytes(size.after));
+    after.title = info.last_cleanup ? "本次清理后的实际内容大小" : "预计清理后的内容大小";
+    after.append(element("small", "", info.last_cleanup ? "已清理" : info.scanned ? "预计" : "待检查"));
     const badge = element("span", "session-badge");
     if (info.recovery_backup) {
       badge.textContent = "待修复";
@@ -184,33 +303,37 @@ function renderList() {
       event.stopPropagation();
       showDetails(info);
     });
-    row.append(checkbox, thumbnail, copy, modified, badge, details);
+    row.append(checkbox, copy, before, after, badge, details);
     row.addEventListener("click", (event) => {
       if (event.detail > 1) return;
       select(info.key, !selected.has(info.key));
     });
     row.addEventListener("dblclick", () => showDetails(info));
-    fragment.append(row);
+    group.append(row);
+    if (childCount) {
+      const children = element("div", "session-children");
+      children.setAttribute("role", "group");
+      children.setAttribute("aria-label", info.title + "的子任务");
+      children.hidden = !open;
+      group.append(children);
+      containers.set(info.key, children);
+    }
+    containers.get(parentKey).append(group);
   });
   list.replaceChildren(fragment);
-  list.hidden = items.length === 0;
+  list.hidden = view.rows.length === 0;
   if (focused) {
-    [...list.children].find((row) => row.dataset.key === focused.key)
+    if (focused.orphan) $("orphan-toggle")?.focus({ preventScroll: true });
+    else [...list.querySelectorAll(".session-row")].find((row) => row.dataset.key === focused.key)
       ?.querySelector(focused.selector)?.focus({ preventScroll: true });
   }
   list.scrollTop = scroll;
   $("session-count").textContent = state.sessions.length;
-  const eligible = state.sessions.filter((info) => info.eligible).length;
-  const pending = state.sessions.filter((info) => !info.scanned).length;
-  $("eligible-count").textContent = eligible;
-  $("scan-summary").textContent = pending
-    ? pending + " 个会话待检查"
-    : "共 " + state.sessions.length + " 个本地会话";
   $("list-summary").textContent =
-    items.length + " 个会话 · " + items.filter((info) => info.eligible).length + " 个可清理图片";
+    view.mainCount + " 个主任务" + (view.subCount ? " · " + view.subCount + " 个子任务" : "");
   $("select-images").textContent = selected.size ? "清除全部选择" : "选择有图片的会话";
-  $("load-more").hidden = items.length <= pageSize;
-  renderAction(items);
+  $("load-more").hidden = view.rows.length <= pageSize;
+  renderAction();
 }
 function renderEmpty(items) {
   const hasFilter = !!$("search").value.trim() || $("images-only").checked;
@@ -239,7 +362,7 @@ function renderAction(visibleItems = filtered()) {
   $("clean").dataset.working = String(state.busy === "clean" || state.busy === "restore");
   document.querySelector(".sessions-panel").setAttribute("aria-busy", String(!!state.busy));
   const items = chosen();
-  const cleanable = items.filter((info) => info.eligible && !info.recovery_backup);
+  const cleanable = items.filter(actionable);
   const saving = cleanable.reduce((total, info) => total + (info.saving || 0) + (info.cache_saving || 0), 0);
   $("selection-saving").hidden = !saving;
   $("selection-saving").replaceChildren(
@@ -248,10 +371,10 @@ function renderAction(visibleItems = filtered()) {
   );
   const repair = items.length === 1 && items[0].recovery_backup;
   const needsRepair = items.some((info) => info.recovery_backup);
-  const visibleKeys = new Set(visibleItems.slice(0, pageSize).map((info) => info.key));
-  const hiddenCount = items.filter((info) => !visibleKeys.has(info.key)).length;
+  const hiddenCount = items.filter((info) => !visibleSessionKeys.has(info.key)).length;
   $("clear-selection").hidden = !items.length;
-  $("clear-selection").disabled = !!state.busy || submitting;
+  const blocked = !!state.busy && state.busy !== "scan";
+  $("clear-selection").disabled = blocked || submitting;
   const pending = items.some((info) => !info.scanned);
   $("selection-title").textContent = repair
     ? "上次操作中断，请先修复"
@@ -262,15 +385,15 @@ function renderAction(visibleItems = filtered()) {
   let hint = "先关闭目标会话，清理完成后再重新打开。";
   if (repair) hint = "先恢复原状态。修复完成前，请勿重新打开这个会话。";
   else if (needsRepair) hint = "请先单独选择待修复会话，恢复原状态后再清理。";
-  else if (pending) hint = "正在检查所选会话中的图片，请稍候。";
+  else if (pending) hint = "无需等待扫描结束，点击清理会优先检查所选会话。";
   else if (items.length && !cleanable.length)
     hint = items.some((info) => info.error)
       ? "会话暂时无法处理，可点击行末箭头查看原因。"
       : "没有可清理的图片。若仍重连或卡思考，请检查网络、代理或服务状态。";
-  else if (cleanable.length) hint = "先关闭目标会话。工具会自动备份，清理后重新打开即可。";
-  $("selection-hint").textContent = (hiddenCount ? hiddenCount + " 个已选会话不在当前列表中。" : "") + hint;
+  else if (cleanable.length) hint = "可立即清理；检测到锁时支持关闭 Codex，完成后自动重启。";
+  $("selection-hint").textContent = (hiddenCount ? hiddenCount + " 个已选会话已折叠或不在当前列表中。" : "") + hint;
   $("clean").disabled =
-    !connected || !!state.busy || submitting || (!repair && (needsRepair || !cleanable.length || pending));
+    !connected || blocked || submitting || (!repair && (needsRepair || !cleanable.length));
   $("clean").querySelector("span").textContent =
     state.busy === "clean"
       ? "正在备份并清理…"
@@ -289,7 +412,7 @@ function renderAction(visibleItems = filtered()) {
     "export-diagnostics",
     "quit",
   ])
-    $(id).disabled = !connected || !!state.busy;
+    $(id).disabled = !connected || (id === "select-images" ? blocked : !!state.busy);
   document.querySelectorAll("[data-action]").forEach((button) => {
     button.disabled = $(button.dataset.action).disabled;
   });
@@ -311,7 +434,10 @@ function showDetails(info) {
   meta.replaceChildren();
   for (const [name, value] of [
     ["工作区", info.cwd || "未记录"],
-    ["图片上下文约减少", bytes(info.saving + info.cache_saving)],
+    ["原始内容大小", bytes(sizes(info).before)],
+    [info.last_cleanup ? "清理后内容大小" : "预计清理后大小", bytes(sizes(info).after)],
+    ["磁盘文件大小", bytes(info.size)],
+    ["历史缓存图片约减少", bytes(info.cache_saving)],
     ["会话 ID", info.thread_id],
     ["说明", "清理保留日志原有大小及历史位置，不用于释放磁盘空间。"],
   ])
@@ -319,7 +445,7 @@ function showDetails(info) {
   openDialog("details-dialog");
 }
 async function prepare(body) {
-  if (submitting || state.busy) return;
+  if (submitting || (state.busy && state.busy !== "scan")) return;
   submitting = true;
   renderAction();
   try {
@@ -328,14 +454,19 @@ async function prepare(body) {
       ...challenge.titles.map((name) => element("li", "", name)),
     );
     $("confirm-title").textContent =
-      challenge.kind === "clean" ? "清理前，先关闭目标会话" : "恢复前，先关闭目标会话";
+      challenge.kind === "clean" ? "确认清理所选会话" : "确认恢复会话图片";
     $("confirm-description").textContent =
       challenge.kind === "clean"
         ? "清理历史图片上下文，保留文字和原始图片文件。每个会话都会先备份。"
         : "恢复所选会话的图片和历史缓存。若会话已有新消息，会拒绝覆盖。";
-    $("confirm-execute").textContent = challenge.kind === "clean" ? "备份并清理" : "恢复图片";
+    $("lock-notice").hidden = !challenge.lock?.requires_close;
+    $("lock-reason").textContent = challenge.lock?.reason || "";
+    $("close-codex-option").hidden = !challenge.lock?.can_close;
+    $("close-codex").checked = !!challenge.lock?.can_close;
     $("confirm-error").textContent = "";
     document.querySelector('input[name="mode"][value="online"]').checked = true;
+    if (challenge.lock?.requires_close && !challenge.lock?.can_close)
+      document.querySelector('input[name="mode"][value="offline"]').checked = true;
     $("confirm-dialog").querySelector("details").open = false;
     resetAcknowledgement();
     openDialog("confirm-dialog");
@@ -350,9 +481,14 @@ function resetAcknowledgement() {
   $("acknowledged").checked = false;
   $("confirm-execute").disabled = true;
   $("ack-text").textContent =
-    document.querySelector('input[name="mode"]:checked').value === "online"
+    $("close-codex").checked
+      ? "我已保存工作并停止任务，允许关闭 Codex，处理结束后自动重启。"
+      : document.querySelector('input[name="mode"]:checked').value === "online"
       ? "我已停止任务并关闭这些目标会话，操作期间不再打开。"
       : "我已完全退出 Codex，包括 IDE 中的 Codex 插件。";
+  $("confirm-execute").textContent = $("close-codex").checked
+    ? "关闭 Codex 并" + (challenge?.kind === "clean" ? "清理" : "恢复")
+    : challenge?.kind === "clean" ? "备份并清理" : "恢复图片";
 }
 async function poll() {
   if (exiting || polling) return;
@@ -375,7 +511,7 @@ async function poll() {
       renderList();
     }
     renderAction();
-    if (state.report && JSON.stringify(state.report) !== lastReport) {
+    if (state.report && !state.busy && !submitting && JSON.stringify(state.report) !== lastReport) {
       lastReport = JSON.stringify(state.report);
       $("notice-title").textContent = state.report.message;
       $("notice-next").textContent = state.report.next_step || "可查看详情了解原因。";
@@ -384,6 +520,7 @@ async function poll() {
         !!state.report.failed?.length || !!state.report.skipped?.length,
       );
       $("notice").hidden = false;
+      $("show-report").click();
       feedback(
         $("notice"),
         [
@@ -416,6 +553,7 @@ async function poll() {
 }
 $("search").addEventListener("input", () => {
   pageSize = 60;
+  collapsedGroups.clear();
   renderList();
 });
 $("reconnect").addEventListener("click", poll);
@@ -425,6 +563,7 @@ $("clear-selection").addEventListener("click", () => {
 });
 $("images-only").addEventListener("change", () => {
   pageSize = 60;
+  collapsedGroups.clear();
   renderList();
 });
 $("reset-filters").addEventListener("click", () => {
@@ -438,12 +577,19 @@ $("load-more").addEventListener("click", () => {
   pageSize += 60;
   renderList();
 });
+$("session-list").addEventListener("scroll", () => {
+  const list = $("session-list");
+  if (pageSize < visibleRowCount && list.scrollTop + list.clientHeight >= list.scrollHeight - 100) {
+    pageSize += 60;
+    renderList();
+  }
+}, { passive: true });
 $("select-images").addEventListener("click", () => {
   selected = selected.size
     ? new Set()
     : new Set(
         filtered()
-          .filter((info) => info.eligible && !info.recovery_backup)
+          .filter((info) => visibleSessionKeys.has(info.key) && info.eligible && !info.recovery_backup)
           .slice(0, 1000)
           .map((info) => info.key),
       );
@@ -454,7 +600,7 @@ $("clean").addEventListener("click", () => {
   if (items.length === 1 && items[0].recovery_backup)
     prepare({ kind: "repair", key: items[0].key });
   else
-    prepare({ kind: "clean", keys: items.filter((info) => info.eligible).map((info) => info.key) });
+    prepare({ kind: "clean", keys: items.filter(actionable).map((info) => info.key) });
 });
 $("refresh").addEventListener("click", async () => {
   try {
@@ -476,6 +622,7 @@ $("acknowledged").addEventListener("change", () => {
 document
   .querySelectorAll('input[name="mode"]')
   .forEach((input) => input.addEventListener("change", resetAcknowledgement));
+$("close-codex").addEventListener("change", resetAcknowledgement);
 document.querySelectorAll("[data-close]").forEach((button) =>
   button.addEventListener("click", () => {
     if (!submitting) button.closest("dialog").close();
@@ -496,6 +643,7 @@ $("confirm-execute").addEventListener("click", async () => {
       confirmation: challenge.confirmation,
       acknowledged: true,
       mode: document.querySelector('input[name="mode"]:checked').value,
+      close_codex: $("close-codex").checked,
     });
     state.busy = challenge.kind === "clean" ? "clean" : "restore";
     challenge = null;
@@ -527,19 +675,41 @@ $("show-report").addEventListener("click", () => {
   const content = $("report-content");
   content.replaceChildren();
   if (report.next_step) content.append(element("p", "", report.next_step));
+  if (report.kind === "clean" && report.completed?.length) {
+    const totals = report.totals;
+    const summary = element("div", "result-sizes");
+    for (const [label, value] of [["原始内容大小", totals.before_size], ["清理后内容大小", totals.after_size],
+      ["内容减少", Math.max(0, totals.before_size - totals.after_size)]]) {
+      const card = element("div");
+      card.append(element("small", "", label), element("strong", "", bytes(value)));
+      summary.append(card);
+    }
+    content.append(summary, element("p", "fine-print", "磁盘文件：" + bytes(totals.disk_before) + " → " + bytes(totals.disk_after) +
+      "。保留填充以兼容历史位置；备份另占空间。"));
+    if (totals.cache_reduced) content.append(element("p", "fine-print", "另减少历史缓存图片内容 " + bytes(totals.cache_reduced)));
+  }
   for (const [key, title] of [
     ["completed", "已完成"],
     ["skipped", "仍被占用，已跳过"],
     ["failed", "未完成"],
   ]) {
     if (report[key]?.length) content.append(element("h3", "", title));
-    for (const item of report[key] || [])
+    for (const item of report[key] || []) {
       content.append(
         element("p", "", item.title),
         element("small", "", item.error || item.backup || ""),
       );
+      if (item.before_size !== undefined) content.append(element("small", "result-comparison",
+        bytes(item.before_size) + " → " + bytes(item.after_size)));
+    }
   }
+  $("retry-locked").hidden = !report.retry_keys?.length;
   openDialog("report-dialog");
+});
+$("retry-locked").addEventListener("click", () => {
+  const keys = state.report?.retry_keys || [];
+  $("report-dialog").close();
+  prepare({ kind: "clean", keys });
 });
 $("open-settings").addEventListener("click", () => {
   $("home-input").value = state.home;

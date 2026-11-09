@@ -12,6 +12,16 @@ from webui import serve
 
 
 class BrowserAcceptanceDesktop(Desktop):
+    def prepare(self, body):
+        result = super().prepare(body)
+        result["lock"] = {"requires_close": False, "can_close": False, "reason": ""}
+        return result
+
+    def execute(self, body):
+        if body.get("close_codex"):
+            raise RuntimeError("Synthetic acceptance must never close the real desktop")
+        return super().execute(body)
+
     def _scan(self):
         # Only this constructed-data host holds a refresh long enough for the
         # browser to observe actual busy feedback. Normal Desktop has no delay.

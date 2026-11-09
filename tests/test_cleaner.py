@@ -478,6 +478,33 @@ class CleanerTests(unittest.TestCase):
         self.assertEqual(entry.title, "子任务 · 测试助手")
         self.assertNotEqual(entry.title, TID)
 
+    def test_catalog_retains_parent_relationship_for_native_subtasks(self):
+        parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        meta = {
+            **self.records[0]["payload"],
+            "parent_thread_id": parent,
+            "source": {"subagent": {"other": "worker"}},
+        }
+        self.path.write_bytes(cleaner.encode({"type": "session_meta", "payload": meta}) + b"\n")
+        entry = cleaner.scan(self.home)[0]
+        self.assertTrue(entry.is_subagent)
+        self.assertEqual(entry.parent_thread_id, parent)
+
+    def test_catalog_supports_thread_spawn_parent_metadata(self):
+        parent = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        meta = {
+            **self.records[0]["payload"],
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}},
+        }
+        self.path.write_bytes(cleaner.encode({"type": "session_meta", "payload": meta}) + b"\n")
+        self.assertEqual(cleaner.catalog(self.home)[0].parent_thread_id, parent)
+
+    def test_invalid_and_self_parent_ids_are_not_used(self):
+        for parent in (TID, "invalid", {}, 123):
+            meta = {**self.records[0]["payload"], "parent_thread_id": parent}
+            self.path.write_bytes(cleaner.encode({"type": "session_meta", "payload": meta}) + b"\n")
+            self.assertEqual(cleaner.catalog(self.home)[0].parent_thread_id, "")
+
     def test_catalog_is_delivered_before_image_analysis_and_cache_is_reused(self):
         cache, events = {}, []
         result = cleaner.scan(

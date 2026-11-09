@@ -249,6 +249,11 @@ async function main() {
     "document.documentElement.dataset.operation==='scan' && getComputedStyle(document.querySelector('.sessions-panel'),'::before').animationName==='activity-trace'",
   );
   await screenshot("web-activity");
+  assert.equal(await evaluate("document.getElementById('clean').disabled"), false,
+    "cleanup must remain available during the global scan");
+  await click("#clean");
+  await waitPage("document.getElementById('confirm-dialog').open");
+  await click("#confirm-dialog [data-close]");
   await waitPage("document.documentElement.dataset.operation==='idle' && !state.busy");
   assert.equal(
     await evaluate(
@@ -297,6 +302,24 @@ async function main() {
   assert.equal(await evaluate("document.querySelectorAll('.session-row').length"), 2);
   await click("#select-images");
   await click(`.session-row[data-key="${firstKey}"] input`);
+  // Exercise lock handling without permission to close a real desktop app.
+  await evaluate(`window.lockFixtureFetch=window.fetch;
+    window.fetch=async (url, options)=>{
+      const response=await window.lockFixtureFetch(url, options);
+      if (!String(url).startsWith('/api/prepare')) return response;
+      const data=await response.json();
+      data.lock={requires_close:true,can_close:true,reason:'检测到会话锁，请关闭 Codex 后清理。'};
+      return new Response(JSON.stringify(data),{status:response.status,headers:{'Content-Type':'application/json'}});
+    };`);
+  await click("#clean");
+  await waitPage("document.getElementById('confirm-dialog').open");
+  assert.equal(await evaluate("document.getElementById('lock-notice').hidden"), false);
+  assert.equal(await evaluate("document.getElementById('close-codex').checked"), true);
+  assert.match(await evaluate("document.getElementById('confirm-execute').textContent"), /关闭 Codex 并清理/);
+  assert.match(await evaluate("document.getElementById('ack-text').textContent"), /自动重启/);
+  await screenshot("web-locked");
+  await click("#confirm-dialog [data-close]");
+  await evaluate("window.fetch=window.lockFixtureFetch");
   await click("#clean");
   await waitPage("document.getElementById('confirm-dialog').open");
   assert.equal(await evaluate("document.getElementById('confirm-execute').disabled"), true);
@@ -313,6 +336,11 @@ async function main() {
   );
   assert.match(await evaluate("document.getElementById('notice-next').textContent"), /重新打开/);
   await screenshot("web-result");
+  assert.equal(await evaluate("document.getElementById('report-dialog').open"), true,
+    "completion must automatically open the result dialog");
+  assert.match(await evaluate("document.querySelector('.result-sizes').textContent"), /原始内容大小.*清理后内容大小/);
+  assert.equal(await evaluate("state.report.totals.after_size < state.report.totals.before_size"), true);
+  await click("#report-dialog [data-close]");
   await fixedLayout("result banner");
   await evaluate("document.getElementById('more-menu').open=true");
   await click("#open-backups");
@@ -326,6 +354,8 @@ async function main() {
   await waitPage(
     "!document.getElementById('confirm-dialog').open && !state.busy && state.report?.message==='已恢复会话图片'",
   );
+  await waitPage("document.getElementById('report-dialog').open");
+  await click("#report-dialog [data-close]");
   await click("#images-only");
   await send("Emulation.setDeviceMetricsOverride", {
     width: 390,
@@ -390,6 +420,7 @@ async function main() {
       title:names[n%names.length]+(n>=8?' · '+(n+1):''),
       preview:names[n%names.length],cwd:'D:/projects/creative-studio',modified:source.modified-n*3600,
       saving:1048576*(n%7+1),cache_saving:0,
+      size:1048576*(n%7+3),content_size:1048576*(n%7+3),
       error:n===6?'这个会话暂时无法读取，请查看详情并重新扫描。':'',
       recovery_backup:n===7?'synthetic-recovery':'',
       eligible:n%3!==2&&n!==6&&n!==7,scanned:true}));
@@ -399,9 +430,22 @@ async function main() {
   })()`);
   assert.equal(await evaluate("document.querySelectorAll('.session-row').length"), 60);
   await fixedLayout("populated workspace");
+  const listSpace = await evaluate(`(() => {
+    const list=document.getElementById('session-list').getBoundingClientRect();
+    return {width:list.width,height:list.height,viewportWidth:innerWidth,viewportHeight:innerHeight};
+  })()`);
+  assert.ok(listSpace.width >= listSpace.viewportWidth * .95 &&
+    listSpace.height >= listSpace.viewportHeight * .60,
+    "the conversation list must occupy the main workspace: " + JSON.stringify(listSpace));
+  assert.equal(await evaluate(`(() => {
+    const title=[...document.querySelectorAll('.session-title')].find(n=>n.textContent.length>30);
+    return getComputedStyle(title).whiteSpace==='normal' && title.scrollHeight<=title.clientHeight;
+  })()`), true, "long conversation titles must wrap without being clipped");
   await screenshot("web-polished-workspace");
-  await click("#load-more");
+  await evaluate("document.getElementById('session-list').scrollTop=document.getElementById('session-list').scrollHeight");
+  await waitPage("document.querySelectorAll('.session-row').length===75");
   assert.equal(await evaluate("document.querySelectorAll('.session-row').length"), 75);
+  await evaluate("document.getElementById('session-list').scrollTop=0");
   await click("#clear-selection");
   await click('.session-row[data-key="presentation-7"] input');
   assert.equal(await evaluate("document.getElementById('clean').disabled"), false);
@@ -413,6 +457,54 @@ async function main() {
   await input("#search", "no-such-presentation");
   await screenshot("web-empty-search");
   await click("#reset-filters");
+  await evaluate(`(() => {
+    const source=window.presentationFixture.sessions[0];
+    const task=(key,title,parent='',extra={})=>({...source,key,thread_id:key,title,
+      preview:title,parent_thread_id:parent,is_subagent:!!parent,...extra});
+    state.sessions=[task('tree-main','制作产品介绍视频','',{eligible:false,saving:0}),
+      task('tree-child','独立子任务检索','tree-main'),
+      task('tree-grandchild','核对字幕','tree-child'),
+      task('tree-other','整理项目文档'),
+      task('tree-orphan','主任务暂缺的子任务','missing-main')];
+    selected.clear();expandedGroups.clear();collapsedGroups.clear();renderList();
+  })()`);
+  assert.equal(await evaluate("document.querySelectorAll('.session-row').length"), 2,
+    "subtasks must be folded under their parents by default");
+  assert.equal(await evaluate("document.querySelectorAll('.subtask-row').length"), 0);
+  assert.equal(await evaluate("document.querySelectorAll('.orphan-group').length"), 1);
+  await click('.session-row[data-key="tree-main"] .subtask-toggle');
+  assert.equal(await evaluate("document.querySelector('.session-children .session-row[data-key=tree-child]')!==null"), true);
+  await click('.session-row[data-key="tree-child"] .subtask-toggle');
+  assert.equal(await evaluate("document.querySelector('.session-children .session-children .session-row[data-key=tree-grandchild]')!==null"), true);
+  await screenshot("web-subtasks");
+  await click('.session-row[data-key="tree-main"] input');
+  assert.deepEqual(await evaluate("[...selected]"), ['tree-main'],
+    "selecting the main task must not implicitly select descendants");
+  await click('.session-row[data-key="tree-child"] input');
+  await click('.session-row[data-key="tree-main"] .subtask-toggle');
+  assert.equal(await evaluate("selected.has('tree-child')"), true);
+  assert.match(await evaluate("document.getElementById('selection-hint').textContent"), /已折叠/);
+  await input("#search", "独立子任务检索");
+  assert.equal(await evaluate("document.querySelector('.session-row[data-key=tree-main]')!==null"), true,
+    "search must retain the parent context and reveal the matching child");
+  assert.equal(await evaluate("document.querySelector('.session-children .session-row[data-key=tree-child]')!==null"), true);
+  await click("#reset-filters");
+  await click("#images-only");
+  assert.equal(await evaluate("document.querySelector('.session-row[data-key=tree-main]')!==null"), true,
+    "an image-only filter must keep the text-only parent of an image subtask");
+  await click("#images-only");
+  await click("#orphan-toggle");
+  assert.equal(await evaluate("document.querySelector('.orphan-group .session-children .session-row[data-key=tree-orphan]')!==null"), true);
+  await evaluate(`(() => {
+    const source=state.sessions[0];
+    state.sessions=[{...source,key:'cycle-a',thread_id:'cycle-a',is_subagent:true,parent_thread_id:'cycle-b'},
+      {...source,key:'cycle-b',thread_id:'cycle-b',is_subagent:true,parent_thread_id:'cycle-a'}];
+    expandedGroups.clear();collapsedGroups.clear();selected.clear();renderList();
+  })()`);
+  await click("#orphan-toggle");
+  await click(".subtask-toggle");
+  assert.equal(await evaluate("document.querySelectorAll('.session-row').length"), 2,
+    "invalid cyclic ancestry must remain reachable without infinite recursion");
   await evaluate("state.sessions=[];renderList()");
   assert.equal(await evaluate("document.getElementById('choose-directory').hidden"), false);
   await screenshot("web-empty-directory");
@@ -455,6 +547,7 @@ async function main() {
       empty_states: "ok",
       connection_recovery: "ok",
       pagination: "ok",
+      subtask_hierarchy: "ok",
       script_errors: 0,
       external_requests: 0,
     }),

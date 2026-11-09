@@ -28,7 +28,9 @@ def verify(executable=None, output=None):
         )
     runtime = ROOT / ".runtime"
     runtime.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=runtime) as temporary:
+    # Edge/Windows may briefly retain cache handles after the browser exits.
+    # A locked test cache must not mask the actual acceptance result.
+    with tempfile.TemporaryDirectory(dir=runtime, ignore_cleanup_errors=True) as temporary:
         scratch = Path(temporary)
         ready = scratch / "browser-ready.json"
         destination = Path(output).resolve() if output else scratch / "screenshots"
@@ -104,6 +106,7 @@ def verify(executable=None, output=None):
                         "empty_states",
                         "connection_recovery",
                         "pagination",
+                        "subtask_hierarchy",
                     )
                 )
                 or browser_checks.get("script_errors") != 0

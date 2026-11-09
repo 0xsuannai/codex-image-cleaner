@@ -1,8 +1,12 @@
-# Codex Image Cleaner
+# Fix Codex reconnects and stuck thinking
 
 [简体中文](README.md) · **English**
 
-Remove image context from local Codex conversation history while keeping text, code, and original image files. Everything runs locally, with automatic backups before changes.
+**Codex Image Cleaner provides a way to try recovering conversations that repeatedly reconnect or remain stuck thinking: remove historical image context, then reopen the conversation.**
+
+It targets conversation history containing screenshots, image inputs, or generated images. Text, code, and original image files are preserved. Everything runs locally, with automatic backups and restore support.
+
+You can select and clean conversations while the scan is still running. When a conversation lock is detected, supported desktop installations offer automatic Codex shutdown and restart after processing. A result dialog shows content sizes before and after cleanup and the outcome for each conversation.
 
 ![Workspace preview using synthetic data](docs/images/workspace.png)
 
@@ -18,18 +22,20 @@ Extract and run `CodexImageCleaner.exe`, or move the `.app` into Applications an
 
 [All releases and checksums](https://github.com/0xsuannai/codex-image-cleaner/releases)
 
-## Usage
+## What to do when Codex reconnects or stays stuck thinking
 
-1. Stop the task and close the target Codex conversation. Other conversations can stay open.
-2. Open the cleaner, search for the conversation, or filter to conversations with images.
-3. Select it, click **清理会话图片** (clean images), and confirm the target names.
-4. Reopen the conversation afterward. To undo, use **备份与恢复** (backups and restore).
+1. Open the cleaner, search for the conversation, or filter to conversations with images.
+2. Select the target and click **清理会话图片** (clean images). You can do this before the full scan finishes; selected conversations are checked first.
+3. Confirm the names. If a lock is detected, save your work and stop tasks, then use automatic Codex shutdown and restart when available. You can also close conversations manually.
+4. Check the result dialog, reopen the cleaned conversation, and send a short message to see whether reconnecting or stuck thinking has improved. If automatic restart was selected, wait for Codex to restart first.
+5. To undo cleanup, use **备份与恢复** (backups and restore).
 
 The default conversation home is `~/.codex` or `CODEX_HOME`; change it in directory settings. If online locking is incompatible, fully exit Codex and its IDE extensions, then choose offline processing.
 
 ## Before you use it
 
-- This reduces image context, **not disk usage**, and cannot guarantee a fix for network or backend reconnects.
+- Cleaning historical image context is a recovery attempt, **not a guaranteed fix for every reconnect or stuck-thinking issue**. Network, proxy, and backend problems require separate troubleshooting.
+- This reduces image context, **not disk usage**.
 - Restore refuses to overwrite messages added after cleanup. After an interruption, use the repair action first.
 - This is an independent tool, not an official OpenAI product. Backups contain conversation data; keep them private.
 

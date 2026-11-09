@@ -5,6 +5,7 @@ import json
 import threading
 import time
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 import test_cleaner as fixtures
@@ -26,6 +27,16 @@ class WebUITests(unittest.TestCase):
             preferences=False,
         )
         self.desktop._scan()
+        self.lock_probe = patch(
+            "desktop.lock_status",
+            return_value={
+                "requires_close": False,
+                "reason": "",
+                "can_close": False,
+            },
+        )
+        self.lock_probe.start()
+        self.addCleanup(self.lock_probe.stop)
         self.server = LocalServer(self.desktop)
         self.thread = threading.Thread(
             target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
@@ -244,6 +255,109 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(self.desktop.report["completed"], [])
         self.assertEqual(len(self.desktop.report["skipped"]), 1)
         self.assertNotIn("重新打开", self.desktop.report["next_step"])
+        self.assertEqual(self.fixture.path.read_bytes(), self.fixture.original)
+        self.assertEqual(self.desktop.report["retry_keys"], list(self.desktop.items))
+
+    def test_cleanup_can_interrupt_scan_and_validate_an_unscanned_selection(self):
+        started = threading.Event()
+        cancelled = threading.Event()
+        key, info = next(iter(self.desktop.items.items()))
+        self.desktop.items[key] = replace(info, scanned=False, sha256="", images=0)
+
+        def slow_scan():
+            cancel = self.desktop.cancel
+            started.set()
+            if not cancel.wait(4):
+                raise AssertionError("Cleanup failed to interrupt the global scan")
+            cancelled.set()
+            raise cleaner.ScanCancelled("stopped")
+
+        with patch.object(self.desktop, "_scan", side_effect=slow_scan):
+            self.desktop.refresh()
+            self.assertTrue(started.wait(2))
+            body = self.prepare()
+            self.assertEqual(self.desktop.busy, "scan")
+            with patch("desktop.scan", wraps=cleaner.scan) as scan_selected:
+                self.assertEqual(self.request("POST", "/api/execute", body)[0], 200)
+                self.finish()
+                self.assertTrue(
+                    all(
+                        call.kwargs["paths"] == {info.path} for call in scan_selected.call_args_list
+                    )
+                )
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(len(self.desktop.report["completed"]), 1)
+        self.assertEqual(cleaner.inspect_session(self.fixture.path).images, 0)
+
+    def test_report_distinguishes_content_sizes_from_disk_sizes(self):
+        before = cleaner.inspect_session(self.fixture.path).content_size
+        self.assertEqual(self.request("POST", "/api/execute", self.prepare())[0], 200)
+        self.finish()
+        totals = self.desktop.report["totals"]
+        self.assertEqual(totals["before_size"], before)
+        self.assertEqual(
+            totals["after_size"], cleaner.inspect_session(self.fixture.path).content_size
+        )
+        self.assertLess(totals["after_size"], totals["before_size"])
+        self.assertEqual(totals["disk_before"], totals["disk_after"])
+        self.assertGreater(totals["cache_reduced"], 0)
+        self.assertEqual(
+            self.desktop.snapshot()["sessions"][0]["last_cleanup"]["after_size"],
+            totals["after_size"],
+        )
+
+    def test_one_click_close_cleans_offline_and_restarts_afterwards(self):
+        events = []
+        real_clean = cleaner.clean_session
+
+        def clean(*args, **kwargs):
+            self.assertFalse(kwargs["online"])
+            events.append("clean")
+            return real_clean(*args, **kwargs)
+
+        body = {**self.prepare(), "mode": "online", "close_codex": True}
+        with (
+            patch("desktop.CodexLifecycle") as lifecycle,
+            patch("desktop.clean_session", side_effect=clean),
+        ):
+            lifecycle.return_value.close.side_effect = lambda: events.append("close")
+            lifecycle.return_value.restart.side_effect = lambda: events.append("restart")
+            self.assertEqual(self.request("POST", "/api/execute", body)[0], 200)
+            self.finish()
+        self.assertEqual(events, ["close", "clean", "restart"])
+        self.assertIn("已重新启动", self.desktop.report["next_step"])
+
+    def test_failed_close_never_mutates_and_still_attempts_restart(self):
+        body = {**self.prepare(), "close_codex": True}
+        with patch("desktop.CodexLifecycle") as lifecycle:
+            lifecycle.return_value.close.side_effect = cleaner.CleanupError("退出被取消")
+            self.assertEqual(self.request("POST", "/api/execute", body)[0], 200)
+            self.finish()
+            lifecycle.return_value.restart.assert_called_once()
+        self.assertEqual(self.fixture.path.read_bytes(), self.fixture.original)
+        self.assertEqual(self.desktop.report["completed"], [])
+        self.assertEqual(len(self.desktop.report["failed"]), 1)
+
+    def test_failed_restart_preserves_successful_cleanup_and_reports_error(self):
+        body = {**self.prepare(), "close_codex": True}
+        with patch("desktop.CodexLifecycle") as lifecycle:
+            lifecycle.return_value.restart.side_effect = OSError("启动失败")
+            self.assertEqual(self.request("POST", "/api/execute", body)[0], 200)
+            self.finish()
+        self.assertEqual(len(self.desktop.report["completed"]), 1)
+        self.assertEqual(len(self.desktop.report["failed"]), 1)
+        self.assertIn("手动打开", self.desktop.report["next_step"])
+
+    def test_failed_cleanup_still_restarts_codex(self):
+        body = {**self.prepare(), "close_codex": True}
+        with (
+            patch("desktop.CodexLifecycle") as lifecycle,
+            patch("desktop.clean_session", side_effect=cleaner.CleanupError("写入失败")),
+        ):
+            self.assertEqual(self.request("POST", "/api/execute", body)[0], 200)
+            self.finish()
+            lifecycle.return_value.restart.assert_called_once()
+        self.assertEqual(len(self.desktop.report["failed"]), 1)
         self.assertEqual(self.fixture.path.read_bytes(), self.fixture.original)
 
     def test_busy_jobs_cannot_be_replaced_or_shutdown(self):

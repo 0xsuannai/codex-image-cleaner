@@ -220,6 +220,12 @@ def preserve_layout(original: bytes, clean: bytes):
     return body + b" " * (len(original) - len(clean)) + ending
 
 
+def content_size(raw: bytes):
+    """JSONL bytes without compatibility padding; retain the record separator."""
+    ending = 2 if raw.endswith(b"\r\n") else 1 if raw.endswith(b"\n") else 0
+    return len(raw.rstrip(b" \t\r\n")) + ending
+
+
 def file_signature(stat):
     # Atomic replacement can intentionally preserve both length and mtime. File
     # identity is therefore part of cache validity, not just size/timestamp.
@@ -234,6 +240,7 @@ class Session:
     cwd: str = ""
     modified: float = 0
     size: int = 0
+    content_size: int = 0
     images: int = 0
     saving: int = 0
     cache_images: int = 0
@@ -244,6 +251,7 @@ class Session:
     title_source: str = ""
     archived: bool = False
     is_subagent: bool = False
+    parent_thread_id: str = ""
     agent_name: str = ""
     scanned: bool = True
     recovery_backup: str = ""
@@ -260,6 +268,7 @@ def inspect_session(path: Path, cancel=None) -> Session:
                 if cancel is not None and cancel.is_set():
                     raise ScanCancelled("扫描已停止，已完成的结果仍可使用")
                 hasher.update(raw)
+                info.content_size += content_size(raw)
                 # Validate every line before offering a file for mutation.
                 value = safe_loads(raw)
                 if not isinstance(value, dict):
@@ -410,6 +419,14 @@ def catalog(home: Path):
                 info.cwd = meta.get("cwd", "")
                 source = meta.get("source")
                 info.is_subagent = isinstance(source, dict) and "subagent" in source
+                subagent = source.get("subagent") if isinstance(source, dict) else None
+                spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+                parent = meta.get("parent_thread_id") or (
+                    spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+                )
+                if isinstance(parent, str) and UUID.fullmatch(parent) and parent != info.thread_id:
+                    info.parent_thread_id = parent
+                    info.is_subagent = True
                 info.agent_name = (
                     meta.get("agent_nickname")
                     or str(meta.get("agent_path") or "").rsplit("/", 1)[-1]
@@ -481,9 +498,20 @@ def catalog(home: Path):
     return result
 
 
-def scan(home: Path, progress=None, *, on_catalog=None, on_session=None, cancel=None, cache=None):
+def scan(
+    home: Path,
+    progress=None,
+    *,
+    on_catalog=None,
+    on_session=None,
+    cancel=None,
+    cache=None,
+    paths=None,
+):
     home = home.expanduser().resolve()
     entries = catalog(home)
+    if paths is not None:
+        entries = [entry for entry in entries if entry.path in paths]
     if on_catalog:
         on_catalog(entries)
     result = []
@@ -507,6 +535,8 @@ def scan(home: Path, progress=None, *, on_catalog=None, on_session=None, cancel=
             and stats["images"] >= 0
             and type(stats.get("saving")) is int
             and stats.get("error") == ""
+            and type(stats.get("content_size")) is int
+            and stats["content_size"] >= 0
         )
         if signature is not None and valid_stats and previous.get("signature") == signature:
             cached = previous.get("stats", {})
@@ -514,7 +544,7 @@ def scan(home: Path, progress=None, *, on_catalog=None, on_session=None, cancel=
                 entry,
                 **{
                     key: cached[key]
-                    for key in ("images", "saving", "sha256", "error")
+                    for key in ("images", "saving", "sha256", "error", "content_size")
                     if key in cached
                 },
                 scanned=True,
@@ -524,6 +554,7 @@ def scan(home: Path, progress=None, *, on_catalog=None, on_session=None, cancel=
             info = replace(
                 entry,
                 images=checked.images,
+                content_size=checked.content_size,
                 saving=checked.saving,
                 sha256=checked.sha256,
                 error=checked.error or entry.error,
@@ -533,7 +564,8 @@ def scan(home: Path, progress=None, *, on_catalog=None, on_session=None, cancel=
                 cache[entry.path] = {
                     "signature": signature,
                     "stats": {
-                        key: getattr(info, key) for key in ("images", "saving", "sha256", "error")
+                        key: getattr(info, key)
+                        for key in ("images", "saving", "sha256", "error", "content_size")
                     },
                 }
         info.error = info.error or entry.error
@@ -885,6 +917,7 @@ def clean_session(home: Path, info: Session, backup_root: Path, *, online=False)
         staged = Path(name)
         offsets = {0: 0}
         old_position = new_position = count = 0
+        original_content = clean_content = 0
         backup = None
         replaced = committed = False
         manifest = None
@@ -893,6 +926,8 @@ def clean_session(home: Path, info: Session, backup_root: Path, *, online=False)
                 for raw in safe_json.records(source):
                     safe_loads(raw)  # Fail closed on malformed or ambiguous JSONL.
                     clean, n = clean_line(raw)
+                    original_content += content_size(raw)
+                    clean_content += content_size(clean)
                     if n:
                         clean = preserve_layout(raw, clean)
                     output.write(clean)
@@ -931,6 +966,8 @@ def clean_session(home: Path, info: Session, backup_root: Path, *, online=False)
                 "clean_sha256": digest(staged),
                 "original_size": path.stat().st_size,
                 "clean_size": staged.stat().st_size,
+                "original_content_size": original_content,
+                "clean_content_size": clean_content,
                 "original_mtime_ns": path.stat().st_mtime_ns,
                 "images": count,
                 "cache_edits": edits,
