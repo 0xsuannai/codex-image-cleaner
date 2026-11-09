@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex 会话清理</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <svg class="symbols" aria-hidden="true">
+      <defs>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10.7" cy="10.7" r="6.7" />
+          <path d="m16 16 4.5 4.5" />
+        </symbol>
+        <symbol id="i-image" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="4" />
+          <circle cx="8" cy="8" r="1.4" />
+          <path d="m4 17 5-5 4 4 3-3 5 5" />
+        </symbol>
+        <symbol id="i-file" viewBox="0 0 24 24">
+          <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" />
+          <path d="M14 3v6h6M8 13h8M8 17h5" />
+        </symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24">
+          <path d="M20 7v5h-5M4 17v-5h5" />
+          <path d="M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1" />
+        </symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6" /></symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z" />
+          <path d="m8 12 3 3 5-6" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6" /></symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 5 5L20 7" /></symbol>
+        <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+        <symbol id="i-restore" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6M12 7v5l3 2"/></symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></symbol>
+        <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5ZM20 2v4m-2-2h4"/></symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="5" cy="12" r="1" />
+          <circle cx="12" cy="12" r="1" />
+          <circle cx="19" cy="12" r="1" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="app-layout">
+      <aside class="sidebar" aria-label="工具导航">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">›_</span><div>Codex <b>Cleaner</b><span class="brand-caption">会话轻装，灵感继续。</span></div></div>
+        <div class="nav-label">工作空间</div>
+        <nav class="side-nav" aria-label="主导航">
+          <a href="#sessions-heading" class="nav-item active" aria-current="page"><svg><use href="#i-grid"/></svg><span>会话清理</span><span class="nav-indicator"></span></a>
+          <button class="nav-item" id="open-backups"><svg><use href="#i-restore"/></svg><span>备份与恢复</span></button>
+          <button class="nav-item" id="open-settings"><svg><use href="#i-settings"/></svg><span>目录设置</span></button>
+        </nav>
+        <details class="sidebar-guide">
+          <summary><svg aria-hidden="true"><use href="#i-shield"/></svg>清理前须知<span>＋</span></summary>
+          <ol>
+            <li><span>01</span><div>找到目标会话<small>支持搜索名称、消息与工作区</small></div></li>
+            <li><span>02</span><div>停止任务并关闭会话<small>仅切换页面不能释放占用</small></div></li>
+            <li><span>03</span><div>清理后重新打开<small>文字与原始素材保留</small></div></li>
+          </ol>
+          <p>清理前自动备份；会话产生新消息后，旧备份将无法覆盖恢复。</p>
+        </details>
+        <div class="sidebar-bottom"><svg><use href="#i-shield"/></svg><div>你的会话，只在本机<small>本地处理 · 不上传内容</small></div><span id="version" class="version"></span></div>
+      </aside>
+      <main class="shell">
+        <nav class="topbar" aria-label="工作区工具">
+          <span class="breadcrumb">工作空间 <span>/</span> <b>会话清理</b></span>
+          <div class="nav-right">
+            <span class="local-tag"><span></span>本地处理</span>
+            <details class="more-menu" id="more-menu">
+              <summary aria-label="更多功能"><span>更多</span><svg><use href="#i-more" /></svg></summary>
+              <div class="menu-popover">
+                <button data-action="open-backups">备份与恢复<span>↗</span></button>
+                <button data-action="open-settings">目录设置<span>↗</span></button>
+                <hr />
+                <button id="export-diagnostics">导出诊断<span>↓</span></button>
+                <hr /><button id="quit">退出工具<span>×</span></button>
+              </div>
+            </details>
+          </div>
+        </nav>
+        <header class="workspace-heading">
+          <div class="heading-copy">
+            <h1>会话轻装<span>，</span>继续创造<span>。</span></h1>
+            <p>清理历史图片上下文，保留文字与原始素材。</p>
+          </div>
+          <div class="hero-stat">
+            <span class="stat-label"><svg aria-hidden="true"><use href="#i-image"/></svg>可清理会话</span>
+            <strong id="eligible-count">—</strong><small id="scan-summary">正在检查本地会话</small>
+          </div>
+        </header>
+        <section id="connection-notice" class="connection-notice" role="status" hidden>
+          <svg aria-hidden="true"><use href="#i-refresh"/></svg>
+          <div><strong id="connection-title">本地连接暂时中断</strong><p id="connection-text">已保留你的选择，正在尝试重新连接。</p></div>
+          <button id="reconnect" class="secondary">重新连接</button>
+        </section>
+      <section id="notice" class="notice" role="status" hidden>
+        <span class="notice-icon"
+          ><svg><use href="#i-check" /></svg
+        ></span>
+        <div>
+          <strong id="notice-title"></strong>
+          <p id="notice-next"></p>
+        </div>
+        <button class="text-button" id="show-report">查看详情</button>
+        <button class="icon-button" id="dismiss-notice" aria-label="收起提示">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </section>
+
+      <section class="sessions-panel" aria-labelledby="sessions-heading">
+        <div class="panel-heading">
+          <h2 id="sessions-heading">
+            会话列表 <span id="session-count">—</span>
+          </h2>
+          <button class="text-button" id="refresh">
+            <svg><use href="#i-refresh" /></svg>重新扫描
+          </button>
+        </div>
+        <div class="toolbar">
+          <label class="search"
+            ><svg><use href="#i-search" /></svg
+            ><input
+              type="search"
+              id="search"
+              placeholder="搜索会话名称或消息"
+              aria-label="搜索会话"
+            /><kbd>Ctrl K</kbd></label
+          >
+          <label class="filter-toggle"
+            ><input type="checkbox" id="images-only" /><span>只看有图片</span></label
+          >
+        </div>
+        <div class="list-heading">
+          <span id="list-summary">正在连接本地工具…</span
+          ><button class="text-button" id="select-images">选择有图片的会话</button>
+        </div>
+        <div class="column-heading" aria-hidden="true">
+          <span>会话名称</span><span>最近使用</span><span>内容状态</span>
+        </div>
+        <div id="session-list" class="session-list" role="group" aria-label="会话列表"></div>
+        <div id="empty" class="empty" hidden>
+          <span
+            ><svg><use href="#i-search" /></svg></span
+          ><strong id="empty-title">没有找到会话</strong>
+          <p id="empty-text"></p>
+          <button id="reset-filters" class="secondary" hidden>清除筛选</button>
+          <button id="choose-directory" class="secondary" data-action="open-settings" hidden>选择会话目录</button>
+        </div>
+        <button id="load-more" class="load-more" hidden>显示更多会话</button>
+        <div class="scan-state">
+          <span class="status-dot"></span><span id="status">准备就绪</span
+          ><progress id="progress" max="1" value="0" hidden></progress
+          ><button class="text-button" id="stop" hidden>停止扫描</button>
+        </div>
+      </section>
+
+      <section class="action-bar" aria-label="清理操作">
+        <span class="action-icon" aria-hidden="true"><svg><use href="#i-spark"/></svg></span><div class="action-copy">
+          <div class="selection-heading"><strong id="selection-title">选择需要清理的会话</strong><button id="clear-selection" class="action-clear" hidden>清除选择</button></div>
+          <p id="selection-hint">先关闭目标会话，清理完成后再重新打开。</p>
+        </div>
+        <span id="selection-saving" class="selection-saving" hidden></span>
+        <button id="clean" class="primary" disabled>
+          <span>清理会话图片</span><svg class="button-arrow"><use href="#i-arrow" /></svg>
+        </button>
+      </section>
+      <footer>
+        <span><svg><use href="#i-shield"/></svg>清理图片上下文，不释放磁盘空间</span><span>本地处理 · 自动备份</span>
+      </footer>
+      </main>
+    </div>
+
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+      <div class="dialog-head">
+        <span class="dialog-icon"
+          ><svg><use href="#i-image" /></svg></span
+        ><button class="icon-button" data-close aria-label="关闭">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <h2 id="confirm-title">清理前，先关闭目标会话</h2>
+      <p class="dialog-intro" id="confirm-description">
+        清理历史图片上下文，保留文字和原始图片文件。每个会话都会先备份。
+      </p>
+      <ul id="confirm-sessions" class="confirm-sessions"></ul>
+      <label class="acknowledgement"
+        ><input type="checkbox" id="acknowledged" /><span id="ack-text"
+          >我已停止任务并关闭这些目标会话，操作期间不再打开。</span
+        ></label
+      >
+      <p class="fine-print">只停止思考或切换页面不一定会释放占用。仍被占用的会话会跳过。</p>
+      <details class="advanced">
+        <summary>已经完全退出 Codex？</summary>
+        <fieldset>
+          <legend>处理方式</legend>
+          <label><input type="radio" name="mode" value="online" checked />Codex 保持打开</label
+          ><label
+            ><input type="radio" name="mode" value="offline" />Codex 已完全退出（含 IDE
+            插件）</label
+          >
+        </fieldset>
+      </details>
+      <p class="dialog-error" id="confirm-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="secondary" data-close>取消</button
+        ><button class="primary" id="confirm-execute" disabled>备份并清理</button>
+      </div>
+    </dialog>
+
+    <dialog id="details-dialog" aria-labelledby="detail-title">
+      <div class="dialog-head">
+        <span class="overline">会话详情</span
+        ><button class="icon-button" data-close aria-label="关闭">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <h2 id="detail-title"></h2>
+      <p id="detail-preview" class="detail-preview"></p>
+      <dl id="detail-meta"></dl>
+      <div class="dialog-actions">
+        <button class="secondary" id="copy-name">复制名称</button
+        ><button class="primary" data-close>完成</button>
+      </div>
+    </dialog>
+
+    <dialog id="settings-dialog" aria-labelledby="settings-title">
+      <div class="dialog-head">
+        <span class="overline">偏好设置</span
+        ><button class="icon-button" data-close aria-label="关闭">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <h2 id="settings-title">目录设置</h2>
+      <p class="dialog-intro">通常无需修改。可粘贴完整路径，设置会保存在本机。</p>
+      <label class="field"
+        >Codex 会话目录<input
+          id="home-input"
+          type="text"
+          spellcheck="false"
+          placeholder="例如 C:\Users\你的用户名\.codex" /></label
+      ><label class="field"
+        >备份保存目录<input id="backups-input" type="text" spellcheck="false"
+      /></label>
+      <p class="fine-print">备份目录应放在 Codex 会话目录之外。</p>
+      <p class="dialog-error" id="settings-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button class="secondary" data-close>取消</button
+        ><button class="primary" id="save-settings">保存并刷新</button>
+      </div>
+    </dialog>
+
+    <dialog id="backups-dialog" aria-labelledby="backups-title">
+      <div class="dialog-head">
+        <span class="overline">找回图片</span
+        ><button class="icon-button" data-close aria-label="关闭">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <h2 id="backups-title">恢复已清理的图片</h2>
+      <p class="dialog-intro">自动备份都在这里。若会话已有新消息，会拒绝覆盖。</p>
+      <div id="backup-list" class="backup-list"></div>
+      <p class="dialog-error" id="backups-error" role="alert"></p>
+      <div class="dialog-actions"><button class="secondary" data-close>关闭</button></div>
+    </dialog>
+
+    <dialog id="report-dialog" aria-labelledby="report-title">
+      <div class="dialog-head">
+        <span class="overline">操作记录</span
+        ><button class="icon-button" data-close aria-label="关闭">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <h2 id="report-title">处理结果</h2>
+      <div id="report-content" class="report-content"></div>
+      <div class="dialog-actions"><button class="primary" data-close>完成</button></div>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </body>
+</html>

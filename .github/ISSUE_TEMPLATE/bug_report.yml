@@ -1,0 +1,47 @@
+name: Bug report / 问题报告
+description: Report a reproducible problem without private conversation data / 请勿上传私人会话
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Chinese and English are welcome. Never attach real sessions, backups, auth files, databases, or unreviewed logs. For security issues, read SECURITY.md first.
+        支持中文和英文。不要上传真实会话、备份、认证文件、数据库或未经检查的日志；安全问题请先阅读 SECURITY.md。
+  - type: input
+    id: versions
+    attributes:
+      label: Versions / 版本
+      description: Application, Codex, Windows, Python (if source), and browser / 应用、Codex、Windows、Python（源码版）、浏览器
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Operation / 操作
+      options:
+        - Scan or UI / 扫描或界面
+        - Online cleanup / 在线清理
+        - Offline cleanup / 离线清理
+        - Restore or repair / 恢复或修复
+        - Packaging or startup / 打包或启动
+        - Other / 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: Prefer synthetic data; remove private paths and conversation details / 优先构造样例，移除私人路径与会话信息
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior / 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics / 脱敏诊断
+      description: Optional. Use More → Export diagnostics; do not paste raw logs / 可选，使用“更多 → 导出诊断”，不要直接粘贴原始日志

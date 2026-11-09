@@ -1,0 +1,21 @@
+name: Feature request / 功能建议
+description: Describe a user problem and the desired behavior / 说明使用场景和期望行为
+title: "[Feature] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem / 使用中遇到的问题
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 期望的行为
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and scope / 替代方案与范围
+      description: Optional. Do not include private conversation data / 可选，请勿包含私人会话
