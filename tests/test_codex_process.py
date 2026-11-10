@@ -1,5 +1,6 @@
 """Lock and app lifecycle checks never close the developer's real desktop."""
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,6 +80,20 @@ class LifecycleTests(unittest.TestCase):
         ):
             self.assertEqual(desktop_processes(), [])
 
+    def test_background_inventory_retains_desktop_validation(self):
+        with (
+            patch("codex_process.sys.platform", "win32"),
+            patch(
+                "codex_process.run", return_value='[{"Id":123,"Path":"C:/apps/Codex.exe"}]'
+            ) as run,
+            patch("codex_process.windows_desktop", return_value=True) as identify,
+        ):
+            self.assertEqual(desktop_processes()[0][0], 123)
+            self.assertIn("MainWindowHandle", run.call_args.args[0][-1])
+            self.assertEqual(desktop_processes(include_background=True)[0][0], 123)
+            self.assertNotIn("MainWindowHandle", run.call_args.args[0][-1])
+            identify.assert_called_with("C:/apps/Codex.exe")
+
     def test_windows_waits_for_exit_and_restarts_captured_executable(self):
         executable = str(Path("C:/apps/Codex.exe"))
         target = (123, executable)
@@ -102,6 +117,67 @@ class LifecycleTests(unittest.TestCase):
         ):
             lifecycle = CodexLifecycle()
             lifecycle.targets = [(1, "desktop")]
+            lifecycle.restart()
+            launch.assert_not_called()
+
+    def test_windows_close_errors_explain_recovery_without_raw_command(self):
+        failures = (
+            (subprocess.CalledProcessError(3, ["powershell.exe"]), "15 秒内未完全退出"),
+            (subprocess.CalledProcessError(2, ["powershell.exe"]), "未接受关闭窗口请求"),
+            (subprocess.CalledProcessError(1, ["powershell.exe"]), "退出码 1"),
+            (subprocess.TimeoutExpired(["powershell.exe"], 20), "退出超时"),
+            (OSError("cannot launch powershell.exe"), "无法发送"),
+        )
+        for failure, expected in failures:
+            with (
+                self.subTest(failure=failure),
+                patch("codex_process.sys.platform", "win32"),
+                patch("codex_process.desktop_processes", return_value=[(123, "desktop")]),
+                patch("codex_process.run", side_effect=failure),
+            ):
+                with self.assertRaises(CleanupError) as caught:
+                    CodexLifecycle().close()
+                message = str(caught.exception)
+                self.assertIn(expected, message)
+                self.assertIn("未执行清理或恢复", message)
+                self.assertIn("离线处理", message)
+                self.assertNotIn("powershell.exe", message)
+                self.assertIs(caught.exception.__cause__, failure)
+
+    def test_close_does_not_accept_a_hidden_but_running_process_as_exited(self):
+        target = (123, "desktop")
+        with (
+            patch("codex_process.sys.platform", "win32"),
+            patch("codex_process.desktop_processes", return_value=[target]) as processes,
+            patch("codex_process.run"),
+            patch("codex_process.time.monotonic", side_effect=[0, 16]),
+        ):
+            with self.assertRaisesRegex(CleanupError, "尚未退出"):
+                CodexLifecycle().close()
+            processes.assert_called_with(include_background=True)
+
+    def test_failed_close_does_not_restart_a_hidden_process(self):
+        target = (123, "desktop")
+
+        def inventory(*, include_background=False):
+            return [target] if include_background else []
+
+        with (
+            patch("codex_process.sys.platform", "win32"),
+            patch("codex_process.desktop_processes", side_effect=[[target], [target]]),
+            patch(
+                "codex_process.run",
+                side_effect=subprocess.CalledProcessError(3, ["powershell.exe"]),
+            ),
+        ):
+            lifecycle = CodexLifecycle()
+            with self.assertRaises(CleanupError):
+                lifecycle.close()
+        with (
+            patch("codex_process.sys.platform", "win32"),
+            patch("codex_process.desktop_processes", side_effect=inventory),
+            patch("codex_process.subprocess.Popen") as launch,
+        ):
             lifecycle.restart()
             launch.assert_not_called()
 

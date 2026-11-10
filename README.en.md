@@ -28,7 +28,7 @@ Extract and run `CodexImageCleaner.exe`, or move the `.app` into Applications an
 2. Select the target and click **清理会话图片** (clean images). You can do this before the full scan finishes; selected conversations are checked first.
 3. Confirm the names. If a lock is detected, save your work and stop tasks, then use automatic Codex shutdown and restart when available. You can also close conversations manually.
 4. Check the result dialog, reopen the cleaned conversation, and send a short message to see whether reconnecting or stuck thinking has improved. If automatic restart was selected, wait for Codex to restart first.
-5. To undo cleanup, use **备份与恢复** (backups and restore).
+5. To undo cleanup, use **备份与恢复** (backups and restore). You can also permanently delete unneeded backups here after confirmation to reclaim their disk space.
 
 The default conversation home is `~/.codex` or `CODEX_HOME`; change it in directory settings. If online locking is incompatible, fully exit Codex and its IDE extensions, then choose offline processing.
 

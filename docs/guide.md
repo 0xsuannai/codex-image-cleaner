@@ -32,6 +32,8 @@ Windows 支持原生 OpenAI.Codex 应用包和可识别的 Electron Codex 桌面
 
 每次修改前保存原会话和恢复清单。恢复会核验文件与缓存，存在新消息或冲突时拒绝覆盖。恢复前同样要关闭目标会话。
 
+在“备份与恢复”中，点击某份备份的“删除备份”，核对会话、备份目录名和占用大小，勾选确认后永久删除。删除只移除该份备份，不修改当前会话或原始图片文件；删除无法撤销，也无法再用这份备份恢复图片上下文。待修复的备份或仍存在恢复标记的会话，必须先完成修复再删除备份。
+
 操作中断后保留备份，单独选择该会话，点击“修复上次中断”。修复完成前不要在 Codex 中重新打开它，也不要手动删除恢复标记。
 
 ### 数据位置
@@ -50,6 +52,7 @@ Windows 支持原生 OpenAI.Codex 应用包和可识别的 Electron Codex 桌面
 | --- | --- |
 | 找不到会话 | 在“目录设置”中核对 `.codex` 或 `CODEX_HOME` |
 | 会话被占用 | 保存工作并停止任务，使用“一键关闭 Codex，完成后自动重启”；CLI / IDE 插件需手动退出 |
+| Codex 在 15 秒内未退出 / 退出码 3 | 本次未执行清理或恢复。保存工作、停止任务，处理退出确认并手动完全退出 Codex，再重新扫描、取消自动关闭选项并选择离线处理。仅关闭窗口可能仍有后台进程 |
 | 本地界面断连 | 等待自动重连或手动重试；后台已退出时重新启动工具 |
 | Mac 无法首次打开 | 应用为 ad-hoc 签名、未公证。按 Apple 官方流程允许可信应用，不要关闭全局安全保护 |
 | 清理后磁盘没变小 | 正常。日志保留原长度和历史位置，备份也保留原数据 |
@@ -79,6 +82,8 @@ The cleaner handles typed image blocks, user image lists, plaintext replacement 
 Text, code, tool arguments, IDs, ordering, byte positions, and original asset files are preserved. Image URLs/Base64 in ordinary text and encrypted content are left unchanged. Unknown database structures are refused. Counts may include cache copies; estimated reduction refers to context content.
 
 Every operation backs up the original history and a restore manifest. Restore requires the target to be closed and refuses newer messages or conflicts. After an interruption, keep the backup, select the affected conversation alone, and run repair before reopening it. Do not delete the recovery marker manually.
+
+In Backup and Restore, choose Delete Backup, review the conversation, backup folder name and size, then acknowledge permanent deletion. This releases only the backup's disk space and leaves current conversations and original image files unchanged. Deletion cannot be undone, and that backup can no longer restore image context. Backups needed for interrupted operations must be repaired before deletion.
 
 ### Local storage
 

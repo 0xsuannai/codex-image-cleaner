@@ -356,6 +356,42 @@ async function main() {
   );
   await waitPage("document.getElementById('report-dialog').open");
   await click("#report-dialog [data-close]");
+  await click("#open-backups");
+  await waitPage("document.querySelectorAll('.backup-item').length===1");
+  assert.equal(await evaluate("document.querySelector('.backup-actions .secondary').disabled"), true);
+  await screenshot("web-backups");
+  await click(".backup-delete");
+  await waitPage("document.getElementById('delete-backup-dialog').open");
+  assert.equal(await evaluate("document.getElementById('delete-backup-execute').disabled"), true);
+  assert.match(await evaluate("document.getElementById('delete-backup-meta').textContent"), /占用/);
+  await click("#delete-backup-dialog [data-close]");
+  assert.equal(await evaluate("document.querySelectorAll('.backup-item').length"), 1, "cancel must preserve backup");
+  await click(".backup-delete");
+  await waitPage("document.getElementById('delete-backup-dialog').open");
+  await click("#delete-backup-acknowledged");
+  assert.equal(await evaluate("document.getElementById('delete-backup-execute').disabled"), false);
+  await screenshot("web-delete-backup");
+  await send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 1, mobile: false,
+  });
+  assert.equal(await evaluate(`(() => {
+    const dialog=document.getElementById('delete-backup-dialog');
+    const button=document.getElementById('delete-backup-execute').getBoundingClientRect();
+    return dialog.scrollWidth<=dialog.clientWidth && button.left>=0 && button.right<=innerWidth && button.bottom<=innerHeight;
+  })()`), true, "narrow delete confirmation must remain usable");
+  await screenshot("web-delete-backup-small");
+  await click("#delete-backup-dialog [data-close]");
+  assert.equal(await evaluate("document.getElementById('backups-dialog').scrollWidth <= document.getElementById('backups-dialog').clientWidth"), true);
+  await screenshot("web-backups-small");
+  await click(".backup-delete");
+  await waitPage("document.getElementById('delete-backup-dialog').open");
+  assert.equal(await evaluate("document.getElementById('delete-backup-execute').disabled"), true, "reopening must reset acknowledgement");
+  await click("#delete-backup-acknowledged");
+  await click("#delete-backup-execute");
+  await waitPage("!document.getElementById('delete-backup-dialog').open && document.querySelectorAll('.backup-item').length===0");
+  assert.match(await evaluate("document.getElementById('backup-list').textContent"), /还没有备份/);
+  assert.match(await evaluate("document.getElementById('toast').textContent"), /备份已删除/);
+  await click("#backups-dialog [data-close]");
   await click("#images-only");
   await send("Emulation.setDeviceMetricsOverride", {
     width: 390,
@@ -536,6 +572,7 @@ async function main() {
       search_selection: "ok",
       confirmation_gate: "ok",
       cleanup_restore: "ok",
+      backup_deletion: "ok",
       small_layout: "ok",
       fixed_viewport: "ok",
       list_scroll: "ok",

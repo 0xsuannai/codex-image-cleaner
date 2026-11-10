@@ -241,6 +241,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = desktop.prepare(body)
             elif path == "/api/execute":
                 desktop.execute(body)
+            elif path == "/api/backups/delete":
+                desktop.delete_backup(body)
             elif path == "/api/settings":
                 desktop.settings(body)
             elif path == "/api/diagnostics":

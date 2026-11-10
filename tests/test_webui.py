@@ -2,6 +2,8 @@
 
 import http.client
 import json
+import os
+import subprocess
 import threading
 import time
 import unittest
@@ -13,6 +15,7 @@ import test_cleaner as fixtures
 import cleaner
 from app_support import AppPaths
 from desktop import Desktop
+from journal import marker, marker_path
 from webui import MAX_BODY, LocalServer, reopen
 
 
@@ -247,6 +250,148 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(self.desktop.report["completed"], [])
         self.assertEqual(len(self.desktop.report["failed"]), 1)
 
+    def deletion(self, backup):
+        entries = self.desktop.list_backups()
+        key = next(
+            item["key"]
+            for item in entries
+            if self.desktop.backup_paths[item["key"]].parent == backup
+        )
+        return self.prepare("delete_backup", key=key)
+
+    def test_backup_deletion_preserves_sessions_cache_and_other_backups(self):
+        first = self.fixture.clean()
+        cleaner.restore(self.fixture.home, first)
+        second = self.fixture.clean()
+        session, rows = self.fixture.path.read_bytes(), self.fixture.rows()
+        for backup in (first, second):
+            body = self.deletion(backup)
+            self.assertTrue(backup.exists())  # Preparation never removes files.
+            self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 200)
+            self.assertFalse(backup.exists())
+            self.assertEqual(self.fixture.path.read_bytes(), session)
+            self.assertEqual(self.fixture.rows(), rows)
+            if backup == first:
+                self.assertTrue((second / "original.jsonl").is_file())
+            self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        self.assertEqual(self.request("GET", "/api/backups")[1]["backups"], [])
+
+    def test_backup_deletion_requires_its_own_authenticated_confirmation(self):
+        backup = self.fixture.clean()
+        self.assertEqual(self.request("POST", "/api/backups/delete", {})[0], 400)
+        body = self.deletion(backup)
+        self.assertEqual(
+            self.request("POST", "/api/backups/delete", body, authorized=False)[0], 401
+        )
+        for changed in ({"acknowledged": False}, {"acknowledged": 1}, {"confirmation": "wrong"}):
+            self.assertEqual(
+                self.request("POST", "/api/backups/delete", {**body, **changed})[0], 400
+            )
+        # A deletion confirmation cannot accidentally be interpreted as a restore.
+        self.assertEqual(self.request("POST", "/api/execute", body)[0], 400)
+        self.desktop.confirmation["expires"] = time.monotonic() - 1
+        self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        body = self.prepare("restore", key=self.desktop.list_backups()[0]["key"])
+        self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        self.assertTrue((backup / "original.jsonl").is_file())
+
+    def test_backup_deletion_refuses_arbitrary_and_stale_targets(self):
+        backup = self.fixture.clean()
+        self.desktop.list_backups()
+        for key in (str(backup), str(self.fixture.backups), "unknown", {}, None):
+            self.assertEqual(
+                self.request("POST", "/api/prepare", {"kind": "delete_backup", "key": key})[0], 400
+            )
+        body = self.deletion(backup)
+        self.desktop.backup_paths = {}
+        self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        self.assertTrue(backup.exists())
+
+    def test_backup_deletion_refuses_changes_after_confirmation(self):
+        backup = self.fixture.clean()
+        for name in ("original.jsonl", "summary.json", "manifest.json"):
+            body = self.deletion(backup)
+            path = backup / name
+            original = path.read_bytes()
+            path.write_bytes(original + b" ")
+            self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+            self.assertEqual(path.read_bytes(), original + b" ")
+            path.write_bytes(original)
+        body = self.deletion(backup)
+        (backup / "keep.txt").write_text("unrelated", encoding="utf-8")
+        self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        self.assertTrue((backup / "original.jsonl").is_file())
+
+    def test_backup_deletion_protects_interrupted_operations(self):
+        backup = self.fixture.clean()
+        manifest = cleaner.validate_manifest(cleaner.safe_json.read_file(backup / "manifest.json"))
+        for status in ("prepared", "restoring"):
+            cleaner.save_manifest(backup, {**manifest, "status": status})
+            key = self.desktop.list_backups()[0]["key"]
+            self.assertEqual(
+                self.request("POST", "/api/prepare", {"kind": "delete_backup", "key": key})[0], 400
+            )
+        cleaner.save_manifest(backup, manifest)
+        body = self.deletion(backup)
+        cleaner.save_json(
+            marker_path(self.fixture.path), marker(self.fixture.path, backup, "clean")
+        )
+        self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        self.assertTrue((backup / "original.jsonl").is_file())
+        marker_path(self.fixture.path).write_bytes(b"{broken")
+        key = self.desktop.list_backups()[0]["key"]
+        self.assertEqual(
+            self.request("POST", "/api/prepare", {"kind": "delete_backup", "key": key})[0], 400
+        )
+
+    def test_backup_deletion_is_blocked_during_other_work(self):
+        backup = self.fixture.clean()
+        key = self.desktop.list_backups()[0]["key"]
+        for busy in ("scan", "clean", "restore"):
+            body = self.deletion(backup)
+            self.desktop.busy = busy
+            try:
+                self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+                self.assertEqual(
+                    self.request("POST", "/api/prepare", {"kind": "delete_backup", "key": key})[0],
+                    400,
+                )
+            finally:
+                self.desktop.busy = ""
+        self.assertTrue(backup.exists())
+
+    def test_backup_deletion_refuses_external_directories_and_links(self):
+        backup = self.fixture.clean()
+        session = self.fixture.path.read_bytes()
+        body = self.deletion(backup)
+        key = self.desktop.confirmation["key"]
+        self.desktop.backup_paths[key] = self.fixture.home / "manifest.json"
+        self.assertEqual(self.request("POST", "/api/backups/delete", body)[0], 400)
+        self.assertEqual(self.fixture.path.read_bytes(), session)
+        if os.name == "nt":
+            # Junctions require no symlink privilege on Windows.
+            import subprocess
+
+            link = self.fixture.backups / "linked-backup"
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(backup)],
+                check=True,
+                capture_output=True,
+            )
+            self.addCleanup(link.rmdir)
+        else:
+            link = self.fixture.backups / "linked-backup"
+            link.symlink_to(backup, target_is_directory=True)
+            self.addCleanup(link.unlink)
+        key = next(item["key"] for item in self.desktop.list_backups())
+        # Use the discovered entry's opaque key, forcing its path to the link
+        # since both entries can resolve to the same object ID.
+        self.desktop.backup_paths[key] = link / "manifest.json"
+        self.assertEqual(
+            self.request("POST", "/api/prepare", {"kind": "delete_backup", "key": key})[0], 400
+        )
+        self.assertTrue((backup / "original.jsonl").is_file())
+
     def test_occupied_target_is_skipped_and_not_reported_as_cleaned(self):
         body = self.prepare()
         with patch("desktop.clean_session", side_effect=cleaner.SessionBusy("occupied")):
@@ -337,6 +482,30 @@ class WebUITests(unittest.TestCase):
         self.assertEqual(self.fixture.path.read_bytes(), self.fixture.original)
         self.assertEqual(self.desktop.report["completed"], [])
         self.assertEqual(len(self.desktop.report["failed"]), 1)
+
+    def test_windows_exit_timeout_reports_recovery_without_mutating_sessions(self):
+        body = {**self.prepare(), "close_codex": True}
+        with (
+            patch("codex_process.sys.platform", "win32"),
+            patch("codex_process.desktop_processes", return_value=[(123, "desktop")]),
+            patch(
+                "codex_process.run",
+                side_effect=subprocess.CalledProcessError(3, ["powershell.exe"]),
+            ),
+            patch("codex_process.subprocess.Popen") as launch,
+            patch("desktop.clean_session") as clean,
+        ):
+            self.assertEqual(self.request("POST", "/api/execute", body)[0], 200)
+            self.finish()
+            clean.assert_not_called()
+            launch.assert_not_called()
+        self.assertEqual(self.fixture.path.read_bytes(), self.fixture.original)
+        self.assertEqual(self.desktop.report["completed"], [])
+        self.assertEqual(len(self.desktop.report["failed"]), 1)
+        error = self.desktop.report["failed"][0]["error"]
+        self.assertIn("15 秒内未完全退出", error)
+        self.assertIn("离线处理", error)
+        self.assertNotIn("powershell.exe", error)
 
     def test_failed_restart_preserves_successful_cleanup_and_reports_error(self):
         body = {**self.prepare(), "close_codex": True}

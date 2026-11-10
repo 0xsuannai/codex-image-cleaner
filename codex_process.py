@@ -61,7 +61,7 @@ def run(arguments, *, timeout=20):
     ).stdout
 
 
-def desktop_processes():
+def desktop_processes(*, include_background=False):
     """Only return identifiable Electron desktop instances with a restart path."""
     if sys.platform == "win32":
         output = run(
@@ -72,8 +72,8 @@ def desktop_processes():
                 "-Command",
                 "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); "
                 "@(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.MainWindowHandle -ne 0 } | "
-                "Select-Object Id,Path) | ConvertTo-Json -Compress",
+                + ("" if include_background else "Where-Object { $_.MainWindowHandle -ne 0 } | ")
+                + "Select-Object Id,Path) | ConvertTo-Json -Compress",
             ]
         )
         rows = json.loads(output) if output.strip() else []
@@ -137,27 +137,46 @@ class CodexLifecycle:
                 # A second inventory prevents closing a reused PID or a different app.
                 if (pid, executable) not in desktop_processes():
                     continue
-                run(
-                    [
-                        "powershell.exe",
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        f"$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; "
-                        "if ($p) { if (-not $p.CloseMainWindow()) { exit 2 }; "
-                        "if (-not $p.WaitForExit(15000)) { exit 3 } }",
-                    ]
-                )
+                try:
+                    run(
+                        [
+                            "powershell.exe",
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            f"$p=Get-Process -Id {pid} -ErrorAction SilentlyContinue; "
+                            "if ($p) { if (-not $p.CloseMainWindow()) { exit 2 }; "
+                            "if (-not $p.WaitForExit(15000)) { exit 3 } }",
+                        ]
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    reason = "无法发送 Codex 退出请求"
+                    if isinstance(exc, subprocess.CalledProcessError):
+                        reason = {
+                            2: "Codex 未接受关闭窗口请求",
+                            3: "Codex 在 15 秒内未完全退出，可能仍在后台运行或等待确认",
+                        }.get(exc.returncode, f"Codex 退出请求失败（退出码 {exc.returncode}）")
+                    elif isinstance(exc, subprocess.TimeoutExpired):
+                        reason = "等待 Codex 退出超时"
+                    raise CleanupError(
+                        reason + "，未执行清理或恢复。请保存工作、停止任务并手动完全退出 "
+                        "Codex，再重新扫描并选择离线处理。"
+                    ) from exc
         elif sys.platform == "darwin":
             run(["osascript", "-e", 'tell application id "com.openai.codex" to quit'])
         deadline = time.monotonic() + 15
-        while any(target in desktop_processes() for target in self.targets):
+        while any(target in desktop_processes(include_background=True) for target in self.targets):
             if time.monotonic() >= deadline:
                 raise CleanupError("Codex 尚未退出，未执行清理。请处理退出提示后重试。")
             time.sleep(0.25)
 
     def restart(self):
-        running = {path for _, path in desktop_processes()} if self.targets else set()
+        # Closing the last window can leave the process alive. Do not launch it again.
+        running = (
+            {path for _, path in desktop_processes(include_background=True)}
+            if self.targets
+            else set()
+        )
         for executable in dict.fromkeys(path for _, path in self.targets):
             if executable in running:
                 continue

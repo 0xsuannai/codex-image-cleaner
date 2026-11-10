@@ -3,6 +3,7 @@
 import hashlib
 import logging
 import secrets
+import stat
 import threading
 import time
 from dataclasses import asdict, replace
@@ -13,6 +14,7 @@ from cleaner import (
     CleanupError,
     ScanCancelled,
     SessionBusy,
+    checked_session_path,
     clean_session,
     default_home,
     restore,
@@ -21,7 +23,7 @@ from cleaner import (
     validate_manifest,
 )
 from codex_process import CodexLifecycle, lock_status
-from journal import backup_summary
+from journal import backup_summary, read_marker
 from safe_json import read_file
 
 logger = logging.getLogger(__name__)
@@ -266,6 +268,24 @@ class Desktop:
             if self.busy and self.busy != "scan":
                 raise CleanupError("请等待当前操作完成")
             kind = body.get("kind", "clean")
+            if kind == "delete_backup":
+                if self.busy:
+                    raise CleanupError("请等待当前操作完成")
+                path, manifest, signature = self._backup_for_deletion(body.get("key"))
+                nonce = secrets.token_urlsafe(32)
+                self.confirmation = {
+                    "nonce": nonce,
+                    "kind": kind,
+                    "key": body["key"],
+                    "signature": signature,
+                    "expires": time.monotonic() + 180,
+                }
+                return {
+                    "confirmation": nonce,
+                    "title": str(manifest.get("title") or "未命名会话"),
+                    "folder": path.name,
+                    "size": sum(item[3] for item in signature[1:]),
+                }
             if kind == "clean":
                 keys = body.get("keys")
                 if (
@@ -322,12 +342,72 @@ class Desktop:
                 "lock": lock_status(self.home, thread_ids),
             }
 
+    def _backup_for_deletion(self, key):
+        """Resolve only listed backups; never recurse through imported paths or links."""
+        manifest_path = self.backup_paths.get(key) if isinstance(key, str) else None
+        if manifest_path is None:
+            raise CleanupError("备份已变化，请刷新后重新选择")
+        root = self.backups.resolve()
+        backup = manifest_path.parent
+        if backup.resolve().parent != root or backup.resolve().is_relative_to(self.home.resolve()):
+            raise CleanupError("备份路径超出备份目录，已停止删除")
+        allowed = {"manifest.json", "summary.json", "original.jsonl", "restore-previous.jsonl"}
+        signature = []
+        for path in [backup, *sorted(backup.iterdir())]:
+            info = path.lstat()
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                or (path != backup and (path.name not in allowed or not stat.S_ISREG(info.st_mode)))
+            ):
+                raise CleanupError("备份包含外链或未知文件，请检查后再删除")
+            signature.append((path.name, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns))
+        manifest = validate_manifest(read_file(manifest_path))
+        home = Path(manifest["home"])
+        rollout = Path(manifest["path"])
+        if (
+            not home.is_absolute()
+            or not rollout.is_absolute()
+            or backup.resolve().is_relative_to(home.resolve())
+        ):
+            raise CleanupError("备份路径无效，已停止删除")
+        rollout = checked_session_path(home, rollout)
+        if manifest["status"] in {"prepared", "restoring"} or read_marker(rollout):
+            raise CleanupError("此会话有未完成操作，请先修复后再删除备份")
+        return backup, manifest, signature
+
+    def delete_backup(self, body):
+        with self.lock:
+            challenge = self.confirmation
+            if (
+                self.busy
+                or not challenge
+                or challenge["kind"] != "delete_backup"
+                or body.get("acknowledged") is not True
+                or not isinstance(body.get("confirmation"), str)
+                or not secrets.compare_digest(challenge["nonce"], body["confirmation"])
+                or time.monotonic() > challenge["expires"]
+            ):
+                raise CleanupError("请重新确认要删除的备份")
+            self.confirmation = None
+            backup, _, signature = self._backup_for_deletion(challenge["key"])
+            if signature != challenge["signature"]:
+                raise CleanupError("备份已变化，请刷新后重新确认删除")
+            # Every entry was checked above. No recursive removal or session writes.
+            # Keep the manifest until last so failed removals remain discoverable.
+            for item in sorted(signature[1:], key=lambda item: item[0] == "manifest.json"):
+                (backup / item[0]).unlink()
+            backup.rmdir()
+            self.backup_paths.pop(challenge["key"], None)
+
     def execute(self, body):
         with self.lock:
             challenge = self.confirmation
             if (
                 (self.busy and self.busy != "scan")
                 or not challenge
+                or challenge["kind"] == "delete_backup"
                 or body.get("acknowledged") is not True
                 or not isinstance(body.get("confirmation"), str)
                 or not secrets.compare_digest(challenge["nonce"], body["confirmation"])

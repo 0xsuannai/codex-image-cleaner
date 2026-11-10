@@ -225,16 +225,30 @@
 
     <dialog id="backups-dialog" aria-labelledby="backups-title">
       <div class="dialog-head">
-        <span class="overline">找回图片</span
+        <span class="overline">备份管理</span
         ><button class="icon-button" data-close aria-label="关闭">
           <svg><use href="#i-close" /></svg>
         </button>
       </div>
-      <h2 id="backups-title">恢复已清理的图片</h2>
-      <p class="dialog-intro">自动备份都在这里。若会话已有新消息，会拒绝覆盖。</p>
+      <h2 id="backups-title">备份与恢复</h2>
+      <p class="dialog-intro">可恢复图片或删除不再需要的备份。若会话已有新消息，恢复会拒绝覆盖。</p>
       <div id="backup-list" class="backup-list"></div>
       <p class="dialog-error" id="backups-error" role="alert"></p>
       <div class="dialog-actions"><button class="secondary" data-close>关闭</button></div>
+    </dialog>
+
+    <dialog id="delete-backup-dialog" aria-labelledby="delete-backup-title">
+      <div class="dialog-head">
+        <span class="overline">删除备份</span>
+        <button class="icon-button" data-close aria-label="关闭"><svg><use href="#i-close" /></svg></button>
+      </div>
+      <h2 id="delete-backup-title">确认删除这份备份？</h2>
+      <ul class="confirm-sessions"><li id="delete-backup-name"></li></ul>
+      <p id="delete-backup-meta" class="fine-print"></p>
+      <p class="dialog-intro">将永久删除这份备份以释放其占用的磁盘空间。当前会话和原始图片文件保持不变，之后无法通过这份备份恢复图片上下文。</p>
+      <label class="acknowledgement"><input type="checkbox" id="delete-backup-acknowledged" /><span>我了解删除无法撤销，确认不再需要这份备份。</span></label>
+      <p class="dialog-error" id="delete-backup-error" role="alert"></p>
+      <div class="dialog-actions"><button class="secondary" data-close>取消</button><button class="danger" id="delete-backup-execute" disabled>永久删除备份</button></div>
     </dialog>
 
     <dialog id="report-dialog" aria-labelledby="report-title">

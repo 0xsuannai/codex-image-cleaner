@@ -95,6 +95,7 @@ def verify(executable=None, output=None):
                         "search_selection",
                         "confirmation_gate",
                         "cleanup_restore",
+                        "backup_deletion",
                         "small_layout",
                         "fixed_viewport",
                         "list_scroll",

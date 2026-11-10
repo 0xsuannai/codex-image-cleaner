@@ -12,6 +12,7 @@ let selected = new Set();
 let connected = false;
 let pageSize = 60;
 let challenge = null;
+let deleteBackupChallenge = null;
 let submitting = false;
 let lastReport = "";
 let detailTitle = "";
@@ -732,10 +733,9 @@ $("save-settings").addEventListener("click", async () => {
     $("save-settings").disabled = false;
   }
 });
-$("open-backups").addEventListener("click", async () => {
+async function loadBackups() {
   $("backup-list").replaceChildren(element("p", "fine-print", "正在读取备份…"));
   $("backups-error").textContent = "";
-  openDialog("backups-dialog");
   try {
     const { backups } = await api("/api/backups");
     const list = $("backup-list");
@@ -748,6 +748,7 @@ $("open-backups").addEventListener("click", async () => {
       copy.append(
         element("strong", "", backup.title),
         element("small", "", timestamp(backup.modified)),
+        element("small", "", ({ cleaned: "可恢复", restored: "已恢复", rolled_back: "已回滚", prepared: "待修复", restoring: "待修复" })[backup.status] || "状态未知"),
       );
       const button = element(
         "button",
@@ -759,11 +760,62 @@ $("open-backups").addEventListener("click", async () => {
         $("backups-dialog").close();
         prepare({ kind: "restore", key: backup.key });
       });
-      item.append(copy, button);
+      const remove = element("button", "danger backup-delete", "删除备份");
+      remove.disabled = ["prepared", "restoring"].includes(backup.status);
+      if (remove.disabled) remove.title = "请先修复未完成的操作，再删除备份";
+      remove.addEventListener("click", () => prepareBackupDeletion(backup.key));
+      const actions = element("div", "backup-actions");
+      actions.append(button, remove);
+      item.append(copy, actions);
       list.append(item);
     }
   } catch (error) {
     $("backups-error").textContent = error.message;
+  }
+}
+$("open-backups").addEventListener("click", () => {
+  openDialog("backups-dialog");
+  loadBackups();
+});
+async function prepareBackupDeletion(key) {
+  if (submitting || state.busy) return;
+  submitting = true;
+  $("backups-error").textContent = "";
+  try {
+    deleteBackupChallenge = await api("/api/prepare", { kind: "delete_backup", key });
+    $("delete-backup-name").textContent = deleteBackupChallenge.title;
+    $("delete-backup-meta").textContent = deleteBackupChallenge.folder + " · 占用 " + bytes(deleteBackupChallenge.size);
+    $("delete-backup-acknowledged").checked = false;
+    $("delete-backup-execute").disabled = true;
+    $("delete-backup-error").textContent = "";
+    openDialog("delete-backup-dialog");
+  } catch (error) {
+    $("backups-error").textContent = error.message;
+  } finally {
+    submitting = false;
+  }
+}
+$("delete-backup-acknowledged").addEventListener("change", () => {
+  $("delete-backup-execute").disabled = !deleteBackupChallenge || !$("delete-backup-acknowledged").checked || submitting;
+});
+$("delete-backup-dialog").addEventListener("cancel", (event) => {
+  if (submitting) event.preventDefault();
+});
+$("delete-backup-execute").addEventListener("click", async () => {
+  if (!deleteBackupChallenge || submitting || !$("delete-backup-acknowledged").checked) return;
+  submitting = true;
+  $("delete-backup-execute").disabled = true;
+  try {
+    await api("/api/backups/delete", { confirmation: deleteBackupChallenge.confirmation, acknowledged: true });
+    $("delete-backup-dialog").close();
+    toast("备份已删除，当前会话保持不变。");
+    await loadBackups();
+  } catch (error) {
+    $("delete-backup-error").textContent = error.message + "。请关闭此窗口后重新选择备份。";
+  } finally {
+    deleteBackupChallenge = null;
+    submitting = false;
+    renderAction();
   }
 });
 $("export-diagnostics").addEventListener("click", async () => {
