@@ -14,9 +14,9 @@ You can select and clean conversations while the scan is still running. When a c
 
 | Platform | Download |
 | --- | --- |
-| Windows 10/11 x64 | [Windows](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc4/codex-image-cleaner-0.4.0rc4-windows-x64.zip) |
-| Mac · Apple Silicon | [M-series](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc4/codex-image-cleaner-0.4.0rc4-macos-arm64.zip) |
-| Mac · Intel | [Intel](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc4/codex-image-cleaner-0.4.0rc4-macos-x86_64.zip) |
+| Windows 10/11 x64 | [Windows](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc5/codex-image-cleaner-0.4.0rc5-windows-x64.zip) |
+| Mac · Apple Silicon | [M-series](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc5/codex-image-cleaner-0.4.0rc5-macos-arm64.zip) |
+| Mac · Intel | [Intel](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc5/codex-image-cleaner-0.4.0rc5-macos-x86_64.zip) |
 
 Extract and run `CodexImageCleaner.exe`, or move the `.app` into Applications and open it. Python is bundled; a modern browser is required. This is a release candidate. Mac builds are verified on macOS 15 and are not Apple-notarized. The application UI is currently Simplified Chinese.
 

@@ -14,9 +14,9 @@
 
 | 系统 | 下载 |
 | --- | --- |
-| Windows 10/11 x64 | [Windows 版](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc4/codex-image-cleaner-0.4.0rc4-windows-x64.zip) |
-| Mac · Apple Silicon | [M 系列芯片版](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc4/codex-image-cleaner-0.4.0rc4-macos-arm64.zip) |
-| Mac · Intel | [Intel 版](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc4/codex-image-cleaner-0.4.0rc4-macos-x86_64.zip) |
+| Windows 10/11 x64 | [Windows 版](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc5/codex-image-cleaner-0.4.0rc5-windows-x64.zip) |
+| Mac · Apple Silicon | [M 系列芯片版](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc5/codex-image-cleaner-0.4.0rc5-macos-arm64.zip) |
+| Mac · Intel | [Intel 版](https://github.com/0xsuannai/codex-image-cleaner/releases/download/v0.4.0rc5/codex-image-cleaner-0.4.0rc5-macos-x86_64.zip) |
 
 解压后运行 `CodexImageCleaner.exe`，或将 `.app` 拖入“应用程序”后打开。无需安装 Python，需要现代浏览器。当前为候选版；Mac 以 macOS 15 验证，应用尚未做 Apple 公证。
 

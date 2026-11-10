@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-APP_VERSION = "0.4.0rc4"
+APP_VERSION = "0.4.0rc5"
 DATA_ENV = "CODEX_IMAGE_CLEANER_DATA_DIR"
 
 
