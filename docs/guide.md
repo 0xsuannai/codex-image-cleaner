@@ -6,7 +6,7 @@
 
 搜索支持名称、消息、工作区和会话 ID。Ctrl+K / Ctrl+F（Mac 使用 ⌘）聚焦搜索；Escape 清除选择。点击行末箭头查看详情。会话每批显示 60 条，单次最多处理 1000 个；筛选或分页隐藏的选择会在操作区提示。
 
-主任务集中显示，子任务按父会话 ID 归入主任务下，默认折叠，点击“子任务”展开后可独立勾选。选择主任务不会自动选中子任务；“选择有图片的会话”只选择当前已显示的匹配会话。折叠不会取消已有选择，操作区会提示隐藏的选择。搜索子任务时会保留并展开主任务；“只看有图片”也会保留对应主任务作为层级上下文。找不到主任务的子任务单独折叠收纳。
+主任务集中显示，子任务按父会话 ID 归入主任务下，默认折叠。父任务的大小合计包含自身和全部下级，不受折叠、筛选或分页影响；任一下级尚未检查时，清理后总大小显示“待检查”。勾选或取消父任务会同步全部下级，包括隐藏的子任务；展开后可单独调整下级选择，未全选时父任务显示半选状态。“选择有图片的会话”只选择当前已显示的匹配会话。折叠不会取消已有选择，操作区会提示隐藏的选择。搜索子任务时会保留并展开主任务；“只看有图片”也会保留对应主任务作为层级上下文。找不到主任务的子任务单独折叠收纳。
 
 扫描时即可选择会话并清理，包括尚未检查的会话。工具先暂停全局扫描，再只检查和处理所选会话；无需等待全部会话扫描完毕。其余未检查会话可继续选择清理，或点击“重新扫描”。
 
@@ -73,7 +73,7 @@ Windows 10/11 x64；Mac 原生 arm64 / x86_64，以 macOS 15 为 CI 基线；Lin
 
 Search matches titles, messages, workspaces, and conversation IDs. Ctrl+K / Ctrl+F (⌘ on Mac) focuses search; Escape clears selection. Row arrows open details. Lists load 60 rows at a time, with up to 1,000 targets per operation. Hidden selections are disclosed in the action area.
 
-Subtasks are grouped under their parent conversation and collapsed by default. Expand a group to select subtasks individually; selecting a parent does not select its children. Bulk image selection applies to currently displayed matching conversations. Collapsing a group keeps existing selections and reports them in the action area. Search reveals matching subtasks together with their parent context, and the image filter retains the relevant parent. Subtasks whose parent is unavailable are collected in a separate collapsed group.
+Subtasks are grouped under their parent conversation and collapsed by default. Parent sizes total the conversation and all descendants, including collapsed, filtered and paginated tasks. The after-cleanup total remains pending until every task has been checked. Selecting or deselecting a parent applies to all descendants, including hidden tasks. Expand a group to adjust individual selections; partially selected groups show an indeterminate checkbox. Bulk image selection applies to currently displayed matching conversations. Collapsing a group keeps existing selections and reports them in the action area. Search reveals matching subtasks together with their parent context, and the image filter retains the relevant parent. Subtasks whose parent is unavailable are collected in a separate collapsed group.
 
 ### Cleanup and recovery
 

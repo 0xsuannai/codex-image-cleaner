@@ -496,10 +496,11 @@ async function main() {
   await evaluate(`(() => {
     const source=window.presentationFixture.sessions[0];
     const task=(key,title,parent='',extra={})=>({...source,key,thread_id:key,title,
-      preview:title,parent_thread_id:parent,is_subagent:!!parent,...extra});
-    state.sessions=[task('tree-main','制作产品介绍视频','',{eligible:false,saving:0}),
-      task('tree-child','独立子任务检索','tree-main'),
-      task('tree-grandchild','核对字幕','tree-child'),
+      preview:title,parent_thread_id:parent,is_subagent:!!parent,scanned:true,last_cleanup:null,...extra});
+    state.sessions=[task('tree-main','制作产品介绍视频','',{eligible:false,size:1024,content_size:1024,saving:0}),
+      task('tree-child','独立子任务检索','tree-main',{size:2048,content_size:2048,saving:1024}),
+      task('tree-grandchild','核对字幕','tree-child',{size:4096,content_size:4096,saving:2048}),
+      task('tree-sibling','其他素材','tree-main',{size:8192,content_size:8192,saving:4096}),
       task('tree-other','整理项目文档'),
       task('tree-orphan','主任务暂缺的子任务','missing-main')];
     selected.clear();expandedGroups.clear();collapsedGroups.clear();renderList();
@@ -508,15 +509,37 @@ async function main() {
     "subtasks must be folded under their parents by default");
   assert.equal(await evaluate("document.querySelectorAll('.subtask-row').length"), 0);
   assert.equal(await evaluate("document.querySelectorAll('.orphan-group').length"), 1);
+  const treeSizes = () => evaluate(`(() => {
+    const row=document.querySelector('.session-row[data-key="tree-main"]');
+    return [...row.querySelectorAll('.session-size')].map(node=>node.firstChild.textContent);
+  })()`);
+  assert.deepEqual(await treeSizes(), ['15.0 KB', '8.0 KB'],
+    "collapsed parent sizes must include every descendant exactly once");
+  await click('.session-row[data-key="tree-main"] input');
+  const treeKeys = ['tree-child', 'tree-grandchild', 'tree-main', 'tree-sibling'];
+  assert.deepEqual(await evaluate("[...selected].sort()"), treeKeys,
+    "selecting a collapsed parent must include all descendants");
+  assert.match(await evaluate("document.getElementById('selection-title').textContent"), /已选 4 个会话/);
+  await click('.session-row[data-key="tree-main"] input');
+  assert.equal(await evaluate("selected.size"), 0, "deselecting a parent must clear its descendants");
   await click('.session-row[data-key="tree-main"] .subtask-toggle');
   assert.equal(await evaluate("document.querySelector('.session-children .session-row[data-key=tree-child]')!==null"), true);
   await click('.session-row[data-key="tree-child"] .subtask-toggle');
   assert.equal(await evaluate("document.querySelector('.session-children .session-children .session-row[data-key=tree-grandchild]')!==null"), true);
   await screenshot("web-subtasks");
+  assert.deepEqual(await treeSizes(), ['15.0 KB', '8.0 KB'], "expansion must not double-count sizes");
+  assert.equal(await evaluate(`document.querySelector('.session-row[data-key="tree-child"] .session-size').firstChild.textContent`), '6.0 KB');
   await click('.session-row[data-key="tree-main"] input');
-  assert.deepEqual(await evaluate("[...selected]"), ['tree-main'],
-    "selecting the main task must not implicitly select descendants");
+  assert.deepEqual(await evaluate("[...selected].sort()"), treeKeys);
   await click('.session-row[data-key="tree-child"] input');
+  assert.deepEqual(await evaluate("[...selected].sort()"), ['tree-main', 'tree-sibling'],
+    "deselecting a nested parent must clear its subtree only");
+  assert.equal(await evaluate(`document.querySelector('.session-row[data-key="tree-main"] input').indeterminate`), true);
+  await click('.session-row[data-key="tree-main"]');
+  assert.deepEqual(await evaluate("[...selected].sort()"), treeKeys,
+    "clicking a partially selected parent row must select its entire subtree");
+  await click('.session-row[data-key="tree-grandchild"] input');
+  assert.equal(await evaluate(`document.querySelector('.session-row[data-key="tree-child"] input').indeterminate`), true);
   await click('.session-row[data-key="tree-main"] .subtask-toggle');
   assert.equal(await evaluate("selected.has('tree-child')"), true);
   assert.match(await evaluate("document.getElementById('selection-hint').textContent"), /已折叠/);
@@ -524,11 +547,30 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('.session-row[data-key=tree-main]')!==null"), true,
     "search must retain the parent context and reveal the matching child");
   assert.equal(await evaluate("document.querySelector('.session-children .session-row[data-key=tree-child]')!==null"), true);
+  assert.equal(await evaluate("document.querySelector('.session-row[data-key=tree-sibling]')===null"), true);
+  assert.deepEqual(await treeSizes(), ['15.0 KB', '8.0 KB'], "search must preserve full group totals");
+  await click("#clear-selection");
+  await click('.session-row[data-key="tree-main"] input');
+  assert.deepEqual(await evaluate("[...selected].sort()"), treeKeys,
+    "parent selection must include descendants hidden by search");
+  await click('.session-row[data-key="tree-main"] input');
+  assert.equal(await evaluate("selected.size"), 0);
   await click("#reset-filters");
   await click("#images-only");
   assert.equal(await evaluate("document.querySelector('.session-row[data-key=tree-main]')!==null"), true,
     "an image-only filter must keep the text-only parent of an image subtask");
+  assert.deepEqual(await treeSizes(), ['15.0 KB', '8.0 KB']);
   await click("#images-only");
+  await evaluate("pageSize=1;renderList()");
+  await click('.session-row[data-key="tree-main"] input');
+  assert.deepEqual(await evaluate("[...selected].sort()"), treeKeys,
+    "parent selection must include descendants beyond the current page");
+  await evaluate("pageSize=60;selected.clear();renderList()");
+  await evaluate("state.sessions.find(info=>info.key==='tree-grandchild').scanned=false;renderList()");
+  assert.deepEqual(await treeSizes(), ['15.0 KB', '—'], "pending descendant must keep the after total unknown");
+  await evaluate(`state.sessions.find(info=>info.key==='tree-grandchild').scanned=true;
+    state.sessions.find(info=>info.key==='tree-child').last_cleanup={before_size:3072,after_size:512};renderList()`);
+  assert.deepEqual(await treeSizes(), ['16.0 KB', '7.5 KB'], "group totals must reflect actual cleanup results");
   await click("#orphan-toggle");
   assert.equal(await evaluate("document.querySelector('.orphan-group .session-children .session-row[data-key=tree-orphan]')!==null"), true);
   await evaluate(`(() => {
@@ -541,6 +583,8 @@ async function main() {
   await click(".subtask-toggle");
   assert.equal(await evaluate("document.querySelectorAll('.session-row').length"), 2,
     "invalid cyclic ancestry must remain reachable without infinite recursion");
+  await click(".session-row input");
+  assert.equal(await evaluate("selected.size"), 2, "cyclic source metadata must not break cascading selection");
   await evaluate("state.sessions=[];renderList()");
   assert.equal(await evaluate("document.getElementById('choose-directory').hidden"), false);
   await screenshot("web-empty-directory");

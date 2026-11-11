@@ -92,9 +92,7 @@ function filtered() {
     })
     .sort((a, b) => b.modified - a.modified);
 }
-function groupedRows() {
-  const matches = filtered();
-  const included = new Set(matches.map((info) => info.key));
+function sessionHierarchy() {
   const byId = new Map(state.sessions.map((info) => [info.thread_id, info]));
   const byKey = new Map(state.sessions.map((info) => [info.key, info]));
   const parents = new Map();
@@ -112,6 +110,39 @@ function groupedRows() {
       seen.add(cursor);
     }
   }
+  const children = new Map();
+  for (const info of state.sessions) {
+    const parent = parents.get(info.key);
+    if (!parent) continue;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(info);
+  }
+  const order = state.sessions.filter((info) => !parents.has(info.key));
+  for (let index = 0; index < order.length; index++) {
+    for (const child of children.get(order[index].key) || []) order.push(child);
+  }
+  const totals = new Map();
+  for (const info of order.reverse()) {
+    const size = sizes(info);
+    const total = { ...size, count: 1, selectedCount: Number(selected.has(info.key)),
+      diskSize: info.size, cleaned: !!info.last_cleanup };
+    for (const child of children.get(info.key) || []) {
+      const subtotal = totals.get(child.key);
+      total.before += subtotal.before;
+      total.after = total.after === null || subtotal.after === null ? null : total.after + subtotal.after;
+      total.count += subtotal.count;
+      total.selectedCount += subtotal.selectedCount;
+      total.diskSize += subtotal.diskSize;
+      total.cleaned &&= subtotal.cleaned;
+    }
+    totals.set(info.key, total);
+  }
+  return { byKey, parents, children, totals };
+}
+function groupedRows(hierarchy) {
+  const matches = filtered();
+  const included = new Set(matches.map((info) => info.key));
+  const { byKey, parents } = hierarchy;
   const reveal = new Set();
   const hasFilter = !!$("search").value.trim() || $("images-only").checked;
   for (const info of matches) {
@@ -190,8 +221,14 @@ function bytes(value) {
   }
 }
 function select(key, checked) {
-  if (checked) selected.add(key);
-  else selected.delete(key);
+  const { children } = sessionHierarchy();
+  const pending = [key];
+  while (pending.length) {
+    const current = pending.pop();
+    if (checked) selected.add(current);
+    else selected.delete(current);
+    for (const child of children.get(current) || []) pending.push(child.key);
+  }
   renderList();
   if (checked) {
     const row = [...$("session-list").querySelectorAll(".session-row")].find((item) => item.dataset.key === key);
@@ -210,7 +247,8 @@ function select(key, checked) {
   }
 }
 function renderList() {
-  const view = groupedRows();
+  const hierarchy = sessionHierarchy();
+  const view = groupedRows(hierarchy);
   visibleRowCount = view.rows.length;
   visibleSessionKeys = new Set();
   const list = $("session-list");
@@ -240,6 +278,9 @@ function renderList() {
       return;
     }
     const { info, parentKey, depth, childCount, open } = entry;
+    const total = hierarchy.totals.get(info.key);
+    const hasChildren = total.count > 1;
+    const checked = total.selectedCount === total.count;
     visibleSessionKeys.add(info.key);
     const group = element("div", "session-group");
     const row = element("div", "session-row" + (depth ? " subtask-row" : "") + (selected.has(info.key) ? " selected" : ""));
@@ -247,7 +288,8 @@ function renderList() {
     row.dataset.parent = parentKey;
     const checkbox = element("input");
     checkbox.type = "checkbox";
-    checkbox.checked = selected.has(info.key);
+    checkbox.checked = checked;
+    checkbox.indeterminate = total.selectedCount > 0 && !checked;
     checkbox.setAttribute("aria-label", "选择会话：" + info.title);
     checkbox.addEventListener("click", (event) => event.stopPropagation());
     checkbox.addEventListener("change", () => select(info.key, checkbox.checked));
@@ -275,12 +317,13 @@ function renderList() {
       meta.append(toggle);
     }
     copy.append(meta);
-    const size = sizes(info);
+    const size = total;
     const before = element("span", "session-size", bytes(size.before));
-    before.title = "有效内容大小；磁盘文件 " + bytes(info.size);
+    before.title = (hasChildren ? "本任务及全部下级的有效内容总大小；磁盘文件合计 " : "有效内容大小；磁盘文件 ") + bytes(total.diskSize);
+    if (hasChildren) before.append(element("small", "", "合计 · " + total.count + " 个会话"));
     const after = element("span", "session-size after-size", bytes(size.after));
-    after.title = info.last_cleanup ? "本次清理后的实际内容大小" : "预计清理后的内容大小";
-    after.append(element("small", "", info.last_cleanup ? "已清理" : info.scanned ? "预计" : "待检查"));
+    after.title = (hasChildren ? "本任务及全部下级：" : "") + (total.cleaned ? "本次清理后的实际内容大小" : "预计清理后的内容大小");
+    after.append(element("small", "", total.cleaned ? "已清理" : size.after !== null ? "预计" : "待检查"));
     const badge = element("span", "session-badge");
     if (info.recovery_backup) {
       badge.textContent = "待修复";
@@ -307,7 +350,7 @@ function renderList() {
     row.append(checkbox, copy, before, after, badge, details);
     row.addEventListener("click", (event) => {
       if (event.detail > 1) return;
-      select(info.key, !selected.has(info.key));
+      select(info.key, !checked);
     });
     row.addEventListener("dblclick", () => showDetails(info));
     group.append(row);

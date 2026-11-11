@@ -76,7 +76,7 @@ input[type='checkbox'], input[type='radio'] { width: 18px; height: 18px; accent-
 .session-preview { display: block; margin-top: 3px; color: #64738b; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-size { font: 15px/1.6 var(--mono); color: #43546e; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .after-size { color: #586bc7; }
-.after-size small { display: block; color: #65758f; font: 12px/1.5 var(--font); }
+.session-size small { display: block; color: #65758f; font: 12px/1.5 var(--font); }
 .session-badge { justify-self: start; padding: 3px 7px; color: #6073bb; background: #f0f3fe; border-radius: 5px; font-size: 13px; white-space: nowrap; }
 .session-badge.muted { color: #8a97ac; background: #f4f6fa; }
 .session-badge.warning { color: #a0783a; background: #fff5e7; }
